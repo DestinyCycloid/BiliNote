@@ -233,7 +233,7 @@ class NoteGenerator:
         grid_size: List[int],
     ) -> NoteResult | None:
         """
-        处理合集视频：下载所有视频，分别转写和生成笔记，最后合并成一个 markdown
+        处理合集视频：下载所有视频，并行转写和生成笔记，最后合并成一个 markdown
         
         :return: 合并后的 NoteResult
         """
@@ -241,13 +241,15 @@ class NoteGenerator:
             logger.info(f"检测到合集处理请求 (task_id={task_id})")
             self._update_status(task_id, TaskStatus.DOWNLOADING, message="正在下载合集...")
             
-            # 下载合集（返回列表或单个）
+            # 1. 下载合集（返回列表或单个）
+            logger.info(f"开始下载合集视频...")
             audio_results = downloader.download(
                 video_url=video_url,
                 quality=quality,
                 output_dir=output_path,
                 process_playlist=True
             )
+            logger.info(f"下载完成，准备处理...")
             
             # 如果不是列表，说明不是合集，按单个视频处理
             if not isinstance(audio_results, list):
@@ -255,12 +257,11 @@ class NoteGenerator:
                 audio_results = [audio_results]
             
             total_videos = len(audio_results)
-            logger.info(f"合集共 {total_videos} 个视频")
+            logger.info(f"合集共 {total_videos} 个视频，准备并行处理")
             
             if total_videos == 1:
                 # 只有一个视频，不需要合并，直接处理
                 logger.info("合集只有1个视频，按单个视频处理")
-                # 递归调用，但不处理合集
                 return self.generate(
                     video_url=video_url,
                     platform=platform,
@@ -277,74 +278,70 @@ class NoteGenerator:
                     video_understanding=video_understanding,
                     video_interval=video_interval,
                     grid_size=grid_size,
-                    process_playlist=False  # 关键：不再处理合集
+                    process_playlist=False
                 )
             
-            # 处理多个视频
-            all_markdowns = []
-            all_transcripts = []
-            first_audio_meta = audio_results[0]  # 使用第一个视频的元信息
+            # 2. 使用并行处理器
+            from app.services.playlist_processor import SimpleThreadPipeline
             
-            for idx, audio_meta in enumerate(audio_results, 1):
-                logger.info(f"处理第 {idx}/{total_videos} 个视频: {audio_meta.title}")
+            processor = SimpleThreadPipeline(
+                transcriber=self.transcriber,
+                max_workers=None,  # 自动根据转写器类型判断
+                transcriber_type=self.transcriber_type,
+            )
+            
+            # 进度回调
+            def update_progress(stats):
                 self._update_status(
-                    task_id, 
-                    TaskStatus.TRANSCRIBING, 
-                    message=f"正在处理第 {idx}/{total_videos} 个视频..."
+                    task_id,
+                    TaskStatus.TRANSCRIBING,
+                    message=f"正在处理合集：已转写 {stats.transcribed}/{stats.total_videos}，已总结 {stats.summarized}/{stats.total_videos}"
                 )
-                
-                # 转写
-                transcript_cache_file = NOTE_OUTPUT_DIR / f"{task_id}_transcript_{idx}.json"
-                transcript = self._transcribe_audio(
-                    audio_file=audio_meta.file_path,
-                    transcript_cache_file=transcript_cache_file,
-                    status_phase=TaskStatus.TRANSCRIBING,
-                )
-                all_transcripts.append(transcript)
-                
-                # GPT 总结
-                markdown_cache_file = NOTE_OUTPUT_DIR / f"{task_id}_markdown_{idx}.md"
-                markdown = self._summarize_text(
-                    audio_meta=audio_meta,
-                    transcript=transcript,
+            
+            # 3. 并行处理所有视频（包含下载）
+            self._update_status(task_id, TaskStatus.TRANSCRIBING, message="正在并行下载和处理合集...")
+            
+            try:
+                markdowns = processor.process_playlist(
+                    audio_results=audio_results,
                     gpt=gpt,
-                    markdown_cache_file=markdown_cache_file,
-                    link=link,
-                    screenshot=screenshot,
-                    formats=_format or [],
-                    style=style,
-                    extras=extras,
-                    video_img_urls=self.video_img_urls,
+                    task_id=task_id,
+                    progress_callback=update_progress,
+                    downloader=downloader,  # 传入下载器，用于并行下载
+                    output_dir=output_path,  # 传入输出目录
                 )
-                
-                # 添加章节标题
-                chapter_markdown = f"# {audio_meta.title}\n\n{markdown}\n\n"
-                all_markdowns.append(chapter_markdown)
+            except Exception as e:
+                logger.error(f"并行处理失败: {e}", exc_info=True)
+                raise
             
-            # 合并所有 markdown
-            combined_markdown = "\n".join(all_markdowns)
+            # 4. 合并结果
+            combined_markdown = "\n".join(markdowns)
             
-            # 保存合并后的 markdown
+            # 5. 保存合并后的 markdown
             combined_cache_file = NOTE_OUTPUT_DIR / f"{task_id}_markdown.md"
             combined_cache_file.write_text(combined_markdown, encoding="utf-8")
             
-            # 合并转写结果（可选，用于调试）
+            # 6. 构造合并的转写结果
             combined_transcript = TranscriptResult(
-                language=all_transcripts[0].language if all_transcripts else "zh",
-                full_text="\n\n".join([t.full_text for t in all_transcripts]),
-                segments=[],  # 合集不需要详细的时间戳
+                language="zh",
+                full_text="\n\n".join([
+                    f"# {audio.title}\n[转写内容已省略]"
+                    for audio in audio_results
+                ]),
+                segments=[],
                 raw={"playlist": True, "total_videos": total_videos}
             )
             
-            # 保存记录
+            # 7. 保存记录到数据库
             self._update_status(task_id, TaskStatus.SAVING)
+            first_audio_meta = audio_results[0]
             self._save_metadata(
-                video_id=first_audio_meta.video_id, 
-                platform=platform, 
+                video_id=first_audio_meta.video_id,
+                platform=platform,
                 task_id=task_id
             )
             
-            # 完成
+            # 8. 完成
             self._update_status(task_id, TaskStatus.SUCCESS)
             logger.info(f"合集笔记生成成功 (task_id={task_id}, 共 {total_videos} 个视频)")
             
