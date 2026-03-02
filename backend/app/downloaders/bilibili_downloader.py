@@ -24,7 +24,7 @@ class BilibiliDownloader(Downloader, ABC):
         quality: DownloadQuality = "fast",
         need_video:Optional[bool]=False,
         process_playlist: bool = False
-    ) -> Union[AudioDownloadResult, List[AudioDownloadResult]]:
+    ) -> Union[AudioDownloadResult, tuple[List[AudioDownloadResult], str]]:
         """
         下载 B 站视频音频
         
@@ -37,7 +37,7 @@ class BilibiliDownloader(Downloader, ABC):
             
         Returns:
             如果 process_playlist=False: 返回单个 AudioDownloadResult
-            如果 process_playlist=True 且是合集: 返回 List[AudioDownloadResult]（只包含基本信息，不下载）
+            如果 process_playlist=True 且是合集: 返回 (List[AudioDownloadResult], 合集标题)
         """
         if output_dir is None:
             output_dir = get_data_dir()
@@ -90,9 +90,12 @@ class BilibiliDownloader(Downloader, ABC):
         self,
         video_url: str,
         output_dir: str,
-    ) -> List[AudioDownloadResult]:
+    ) -> tuple[List[AudioDownloadResult], str]:
         """
         快速获取合集中所有视频的URL（使用 extract_flat）
+        
+        Returns:
+            (视频列表, 合集标题)
         """
         ydl_opts = {
             'extract_flat': True,  # 只提取URL，不获取详细信息
@@ -102,9 +105,12 @@ class BilibiliDownloader(Downloader, ABC):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(video_url, download=False)
             
+            # 获取合集标题
+            playlist_title = info.get('title', '未命名合集')
+            
             if 'entries' not in info:
                 # 不是合集
-                return [self._create_placeholder_result(info, output_dir)]
+                return [self._create_placeholder_result(info, output_dir)], playlist_title
             
             # 是合集，返回占位符列表
             results = []
@@ -112,7 +118,7 @@ class BilibiliDownloader(Downloader, ABC):
                 if entry:
                     results.append(self._create_placeholder_result(entry, output_dir, idx))
             
-            return results
+            return results, playlist_title
     
     def _create_placeholder_result(self, info: dict, output_dir: str, idx: int = 1) -> AudioDownloadResult:
         """创建占位符结果（只有URL，没有详细信息）"""

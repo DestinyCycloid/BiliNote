@@ -32,6 +32,7 @@ from app.services.constant import SUPPORT_PLATFORM_MAP
 from app.services.provider import ProviderService
 from app.transcriber.base import Transcriber
 from app.transcriber.transcriber_provider import get_transcriber, _transcribers
+from app.utils.logger import get_logger
 from app.utils.note_helper import replace_content_markers
 from app.utils.status_code import StatusCode
 from app.utils.video_helper import generate_screenshot
@@ -55,8 +56,7 @@ IMAGE_OUTPUT_DIR = os.getenv("OUT_DIR", "./static/screenshots")
 IMAGE_BASE_URL = os.getenv("IMAGE_BASE_URL", "/static/screenshots")
 
 # 日志配置
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+logger = get_logger(__name__)
 
 
 class NoteGenerator:
@@ -123,7 +123,6 @@ class NoteGenerator:
             grid_size = []
 
         try:
-            logger.info(f"开始生成笔记 (task_id={task_id}, process_playlist={process_playlist})")
             self._update_status(task_id, TaskStatus.PARSING)
 
             # 获取下载器与 GPT 实例
@@ -402,8 +401,6 @@ class NoteGenerator:
         :return: 合并后的 NoteResult
         """
         try:
-            logger.info(f"检测到合集处理请求 (task_id={task_id}, 串行模式={playlist_serial_mode})")
-            
             # 如果是串行模式，使用原有的逐个处理逻辑
             if playlist_serial_mode:
                 return self._generate_playlist_serial(
@@ -430,26 +427,29 @@ class NoteGenerator:
             self._update_status(task_id, TaskStatus.DOWNLOADING, message="正在下载合集...")
             
             # 1. 下载合集（返回列表或单个）
-            logger.info(f"开始下载合集视频...")
-            audio_results = downloader.download(
+            download_result = downloader.download(
                 video_url=video_url,
                 quality=quality,
                 output_dir=output_path,
                 process_playlist=True
             )
-            logger.info(f"下载完成，准备处理...")
+            
+            # 解包结果：可能是 (列表, 标题) 或 单个结果
+            if isinstance(download_result, tuple):
+                audio_results, playlist_title = download_result
+                logger.info(f"✅ 合集标题: 《{playlist_title}》")
+            else:
+                audio_results = download_result
+                playlist_title = "未命名合集"
             
             # 如果不是列表，说明不是合集，按单个视频处理
             if not isinstance(audio_results, list):
-                logger.info("不是合集，按单个视频处理")
                 audio_results = [audio_results]
             
             total_videos = len(audio_results)
-            logger.info(f"合集共 {total_videos} 个视频，准备并行处理")
             
             if total_videos == 1:
-                # 只有一个视频，不需要合并，直接处理
-                logger.info("合集只有1个视频，按单个视频处理")
+                # 只有一个视频，按单个视频处理
                 return self.generate(
                     video_url=video_url,
                     platform=platform,
@@ -523,6 +523,10 @@ class NoteGenerator:
             # 7. 保存记录到数据库
             self._update_status(task_id, TaskStatus.SAVING)
             first_audio_meta = audio_results[0]
+            
+            # 使用合集标题而不是第一个视频的标题
+            first_audio_meta.title = playlist_title
+            
             self._save_metadata(
                 video_id=first_audio_meta.video_id,
                 platform=platform,

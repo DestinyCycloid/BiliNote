@@ -175,8 +175,6 @@ const NoteForm = () => {
     if (!currentTask) return
     const { formData } = currentTask
 
-    console.log('currentTask.formData.platform:', formData.platform)
-
     form.reset({
       platform: formData.platform || 'bilibili',
       video_url: formData.video_url || '',

@@ -240,7 +240,7 @@ class SimpleThreadPipeline:
                     logger.info(f"[{idx+1}/{total}] 音频已存在，跳过下载: {audio.file_path}")
             
             # 1. 转写（带重试机制）
-            logger.info(f"[{idx+1}/{total}] 开始转写 (转写器: {self.transcriber_type})")
+            logger.info(f"[{idx+1}/{total}] 开始转写")
             transcript = self._transcribe_with_retry(audio.file_path, idx, total)
             
             self.stats.transcribed += 1
@@ -249,10 +249,10 @@ class SimpleThreadPipeline:
                 progress_callback(self.stats)
             
             transcribe_time = time.time() - start_time
-            logger.info(f"[{idx+1}/{total}] ✅ 转写完成，耗时 {transcribe_time:.1f}秒")
+            logger.info(f"[{idx+1}/{total}] 转写完成，耗时 {transcribe_time:.1f}秒")
             
             # 2. GPT 总结
-            logger.info(f"[{idx+1}/{total}] 🔥 开始 GPT 总结: {audio.title}")
+            logger.info(f"[{idx+1}/{total}] 开始 GPT 总结")
             gpt_start = time.time()
             
             # 构造 GPT 输入
@@ -269,7 +269,7 @@ class SimpleThreadPipeline:
             total_time = time.time() - start_time
             
             logger.info(
-                f"[{idx+1}/{total}] ✅ GPT 总结完成: {audio.title}，"
+                f"[{idx+1}/{total}] GPT 总结完成: {audio.title}，"
                 f"转写: {transcribe_time:.1f}s, GPT: {gpt_time:.1f}s, "
                 f"总计: {total_time:.1f}s"
             )

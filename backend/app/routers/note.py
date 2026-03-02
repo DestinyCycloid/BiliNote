@@ -282,8 +282,16 @@ def get_task_status(task_id: str):
 
     # 优先读状态文件
     if os.path.exists(status_path):
-        with open(status_path, "r", encoding="utf-8") as f:
-            status_content = json.load(f)
+        try:
+            with open(status_path, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+                if not content:
+                    # 文件为空，返回处理中状态
+                    return {"code": 0, "data": {"status": TaskStatus.TRANSCRIBING.value, "message": "处理中..."}}
+                status_content = json.loads(content)
+        except json.JSONDecodeError:
+            # JSON 解析失败，返回处理中状态
+            return {"code": 0, "data": {"status": TaskStatus.TRANSCRIBING.value, "message": "处理中..."}}
 
         status = status_content.get("status")
         message = status_content.get("message", "")
