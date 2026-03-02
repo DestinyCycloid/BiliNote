@@ -53,6 +53,7 @@ function App() {
                 <Route path="new" element={<ProviderForm isCreate />} />
                 <Route path=":id" element={<ProviderForm />} />
               </Route>
+              <Route path="transcriber" element={<Transcriber />} />
               <Route path="download" element={<Downloader />}>
                 <Route path=":id" element={<DownloaderForm />} />
               </Route>

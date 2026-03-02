@@ -83,7 +83,6 @@ web_modules/
 # parcel-bundler cache (https://parceljs.org/)
 .cache
 .parcel-cache
-.vscode
 
 # Next.js build output
 .next
@@ -129,6 +128,8 @@ dist
 
 # Stores VSCode versions used for testing VSCode extensions
 .vscode-test
+.vscode
+.kiro
 
 # yarn v2
 .yarn/cache

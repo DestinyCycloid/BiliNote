@@ -3,7 +3,17 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Button } from '@/components/ui/button'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Loader2, CheckCircle2, Info } from 'lucide-react'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
+import { Loader2, CheckCircle2, Info, AlertTriangle } from 'lucide-react'
 import toast from 'react-hot-toast'
 import request from '@/utils/request'
 
@@ -19,6 +29,7 @@ const Transcriber = () => {
   const [selectedTranscriber, setSelectedTranscriber] = useState<string>('')
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [showConfirmDialog, setShowConfirmDialog] = useState(false)
 
   // 加载转写器列表
   useEffect(() => {
@@ -28,11 +39,18 @@ const Transcriber = () => {
   const loadTranscribers = async () => {
     setLoading(true)
     try {
-      const response = await request.get('/transcribers')
-      if (response && response.data) {
-        setTranscribers(response.data.transcribers)
-        setCurrentTranscriber(response.data.current)
-        setSelectedTranscriber(response.data.current)
+      const data = await request.get('/transcribers') as any
+      
+      if (data) {
+        setTranscribers(data.transcribers || [])
+        setCurrentTranscriber(data.current || '')
+        setSelectedTranscriber(data.current || '')
+        
+        if (!data.transcribers || data.transcribers.length === 0) {
+          toast.error('未找到可用的转写器')
+        }
+      } else {
+        toast.error('获取转写器列表失败')
       }
     } catch (error) {
       console.error('加载转写器列表失败:', error)
@@ -42,26 +60,73 @@ const Transcriber = () => {
     }
   }
 
-  const handleSave = async () => {
+  const handleSaveClick = () => {
     if (selectedTranscriber === currentTranscriber) {
       toast.success('当前已是该转写器')
       return
     }
+    // 显示确认对话框
+    setShowConfirmDialog(true)
+  }
 
+  const handleConfirmSave = async () => {
+    setShowConfirmDialog(false)
     setSaving(true)
+    
     try {
-      const response = await request.post('/transcriber/set', {
+      // 保存配置，nodemon 会监控 .env 文件变化并自动重启后端
+      const data = await request.post('/transcriber/set', {
         transcriber_type: selectedTranscriber,
       })
       
-      if (response && response.data) {
-        toast.success('转写器设置成功！重启后生效')
+      if (data) {
+        toast.success('配置已保存，后端正在重启...')
         setCurrentTranscriber(selectedTranscriber)
+        
+        // 等待后端重启（nodemon 会自动重启）
+        toast.loading('等待后端重启中...', { duration: 20000 })
+        
+        // 等待 2 秒让后端开始重启
+        await new Promise(resolve => setTimeout(resolve, 2000))
+        
+        let retries = 0
+        const maxRetries = 40 // 最多等待 40 秒
+        
+        const checkBackendHealth = async (): Promise<void> => {
+          retries++
+          
+          try {
+            // 尝试访问健康检查端点
+            await request.get('/sys_check')
+            
+            // 后端已恢复
+            toast.dismiss()
+            toast.success('后端重启成功！转写器已切换')
+            
+            // 刷新页面以确保前端状态同步
+            setTimeout(() => {
+              window.location.reload()
+            }, 1000)
+            
+          } catch (error) {
+            // 后端还未恢复
+            if (retries >= maxRetries) {
+              toast.dismiss()
+              toast.error('后端重启超时，请检查终端日志或手动重启服务')
+              setSaving(false)
+            } else {
+              // 继续等待
+              await new Promise(resolve => setTimeout(resolve, 1000))
+              return checkBackendHealth()
+            }
+          }
+        }
+        
+        await checkBackendHealth()
       }
     } catch (error) {
       console.error('设置转写器失败:', error)
       toast.error('设置转写器失败')
-    } finally {
       setSaving(false)
     }
   }
@@ -126,7 +191,7 @@ const Transcriber = () => {
 
           <div className="flex gap-2">
             <Button
-              onClick={handleSave}
+              onClick={handleSaveClick}
               disabled={saving || selectedTranscriber === currentTranscriber}
               className="flex-1"
             >
@@ -145,6 +210,40 @@ const Transcriber = () => {
               )}
             </Button>
           </div>
+
+          {/* 确认对话框 */}
+          <AlertDialog open={showConfirmDialog} onOpenChange={setShowConfirmDialog}>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle className="flex items-center gap-2">
+                  <AlertTriangle className="h-5 w-5 text-amber-500" />
+                  确认切换转写器
+                </AlertDialogTitle>
+                <AlertDialogDescription className="space-y-3">
+                  <p>
+                    切换转写器后，需要重启后端服务才能生效。
+                  </p>
+                  <div className="rounded-md bg-amber-50 p-3 text-sm">
+                    <p className="font-semibold text-amber-900 mb-1">⚠️ 重要提示：</p>
+                    <ul className="text-amber-800 space-y-1 text-xs">
+                      <li>• 如果当前有正在处理的任务，请等待完成后再切换</li>
+                      <li>• 保存后会自动重启后端服务</li>
+                      <li>• 重启过程大约需要 3-5 秒</li>
+                    </ul>
+                  </div>
+                  <p className="text-sm">
+                    确定要切换到 <span className="font-semibold">{transcribers.find(t => t.value === selectedTranscriber)?.label}</span> 吗？
+                  </p>
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>取消</AlertDialogCancel>
+                <AlertDialogAction onClick={handleConfirmSave}>
+                  确认切换
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
 
           <Alert>
             <Info className="h-4 w-4" />

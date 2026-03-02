@@ -1,0 +1,26 @@
+{
+  "name": "bilinote",
+  "version": "1.8.1",
+  "description": "AI 视频笔记生成工具",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "set PYTHONIOENCODING=utf-8 && cd backend && nodemon --watch .env --exec python main.py",
+    "dev:frontend": "cd BillNote_frontend && npm run dev",
+    "install:all": "npm run install:backend && npm run install:frontend",
+    "install:backend": "cd backend && pip install -r requirements.txt",
+    "install:frontend": "cd BillNote_frontend && npm install"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "nodemon": "^3.1.14"
+  },
+  "keywords": [
+    "ai",
+    "video",
+    "notes",
+    "bilibili",
+    "youtube"
+  ],
+  "author": "JefferyHcool",
+  "license": "MIT"
+}
