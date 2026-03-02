@@ -21,6 +21,7 @@ from app.models.transcriber_model import TranscriptResult
 from app.gpt.base import GPT
 from app.transcriber.base import Transcriber
 from app.utils.logger import get_logger
+from app.utils.audio_validator import validate_audio_file
 
 logger = get_logger(__name__)
 
@@ -209,10 +210,20 @@ class SimpleThreadPipeline:
         start_time = time.time()
         
         try:
-            # 0. 下载音频（如果还没下载）
+            # 0. 下载音频（如果还没下载或文件无效）
             if downloader:
                 # 检查文件是否存在且有效
-                if not audio.file_path or not os.path.exists(audio.file_path):
+                need_download = True
+                if audio.file_path and os.path.exists(audio.file_path):
+                    # 快速校验文件完整性
+                    is_valid, error_msg = validate_audio_file(audio.file_path)
+                    if is_valid:
+                        need_download = False
+                        logger.info(f"[{idx+1}/{total}] 音频已存在且有效，跳过下载")
+                    else:
+                        logger.warning(f"[{idx+1}/{total}] 音频文件无效: {error_msg}，重新下载")
+                
+                if need_download:
                     logger.info(f"[{idx+1}/{total}] 开始下载音频: {audio.title}")
                     download_start = time.time()
                     
@@ -235,9 +246,7 @@ class SimpleThreadPipeline:
                         audio.file_path = result
                     
                     download_time = time.time() - download_start
-                    logger.info(f"[{idx+1}/{total}] 下载完成，耗时 {download_time:.1f}秒，标题: {audio.title}")
-                else:
-                    logger.info(f"[{idx+1}/{total}] 音频已存在，跳过下载: {audio.file_path}")
+                    logger.info(f"[{idx+1}/{total}] 下载完成，耗时 {download_time:.1f}秒")
             
             # 1. 转写（带重试机制）
             logger.info(f"[{idx+1}/{total}] 开始转写")

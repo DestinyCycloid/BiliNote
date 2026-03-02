@@ -153,11 +153,16 @@ class NoteGenerator:
                 )
 
             # 单个视频处理（原有逻辑）
-            # 缓存文件路径
-            audio_cache_file = NOTE_OUTPUT_DIR / f"{task_id}_audio.json"
-            transcript_cache_file = NOTE_OUTPUT_DIR / f"{task_id}_transcript.json"
-            markdown_cache_file = NOTE_OUTPUT_DIR / f"{task_id}_markdown.md"
-            print(audio_cache_file)
+            # 提取 video_id 用于缓存
+            from app.utils.url_parser import extract_video_id
+            video_id = extract_video_id(video_url, platform)
+            
+            # 缓存文件路径（基于 video_id + quality，而不是 task_id）
+            cache_key = f"{platform}_{video_id}_{quality}"
+            audio_cache_file = NOTE_OUTPUT_DIR / f"{cache_key}_audio.json"
+            transcript_cache_file = NOTE_OUTPUT_DIR / f"{cache_key}_transcript.json"
+            markdown_cache_file = NOTE_OUTPUT_DIR / f"{cache_key}_markdown.md"
+            
             # 1. 下载音频/视频
             audio_meta = self._download_media(
                 downloader=downloader,
@@ -734,9 +739,22 @@ class NoteGenerator:
             logger.info(f"检测到音频缓存 ({audio_cache_file})，直接读取")
             try:
                 data = json.loads(audio_cache_file.read_text(encoding="utf-8"))
-                return AudioDownloadResult(**data)
+                audio_result = AudioDownloadResult(**data)
+                
+                # 校验音频文件是否存在且有效
+                if audio_result.file_path and os.path.exists(audio_result.file_path):
+                    from app.utils.audio_validator import validate_audio_file
+                    is_valid, error_msg = validate_audio_file(audio_result.file_path)
+                    if is_valid:
+                        logger.info(f"音频文件有效，使用缓存: {audio_result.file_path}")
+                        return audio_result
+                    else:
+                        logger.warning(f"音频文件无效: {error_msg}，重新下载")
+                else:
+                    logger.warning(f"音频文件不存在: {audio_result.file_path}，重新下载")
             except Exception as e:
                 logger.warning(f"读取音频缓存失败，将重新下载：{e}")
+        
         # 下载音频
         try:
             logger.info("开始下载音频")
