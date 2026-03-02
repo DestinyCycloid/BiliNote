@@ -39,6 +39,7 @@ class WhisperTranscriber(Transcriber):
             compute_type: str = None,
             cpu_threads: int = 1,
     ):
+        self.model_size = model_size  # 保存模型大小
         if device == 'cpu' or device is None:
             self.device = 'cpu'
         else:
@@ -92,8 +93,13 @@ class WhisperTranscriber(Transcriber):
 
     @timeit
     def transcript(self, file_path: str) -> TranscriptResult:
+        import time
+        start_time = time.perf_counter()
+        
         try:
-
+            logger.info(f"开始音频转写: {file_path}")
+            logger.info(f"使用模型: Whisper-{self.model_size}, 设备: {self.device}, 精度: {self.compute_type}")
+            
             segments_raw, info = self.model.transcribe(file_path)
 
             segments = []
@@ -114,10 +120,19 @@ class WhisperTranscriber(Transcriber):
                 segments=segments,
                 raw=info
             )
+            
+            end_time = time.perf_counter()
+            duration = end_time - start_time
+            logger.info(f"✅ 音频转写完成，耗时 {duration:.2f} 秒")
+            logger.info(f"识别语言: {info.language}, 文本长度: {len(full_text)} 字符, 片段数: {len(segments)}")
+            
             # self.on_finish(file_path, result)
             return result
         except Exception as e:
-            print(f"转写失败：{e}")
+            end_time = time.perf_counter()
+            duration = end_time - start_time
+            logger.error(f"❌ 转写失败（耗时 {duration:.2f} 秒）：{e}")
+            raise
 
 
     def on_finish(self,video_path:str,result: TranscriptResult)->None:

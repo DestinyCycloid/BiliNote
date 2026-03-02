@@ -29,6 +29,103 @@ from app.enmus.task_status_enums import TaskStatus
 router = APIRouter()
 
 
+@router.get("/transcribers")
+def get_available_transcribers():
+    """获取可用的转写器列表"""
+    from app.transcriber.transcriber_provider import TranscriberType
+    import os
+    
+    transcribers = [
+        {
+            "value": TranscriberType.FAST_WHISPER.value,
+            "label": "Faster Whisper",
+            "description": "快速、准确，支持多种语言"
+        },
+        {
+            "value": TranscriberType.PARAFORMER_STREAMING.value,
+            "label": "Paraformer-streaming",
+            "description": "流式转写，中文优化，低延迟（推荐）"
+        },
+        {
+            "value": TranscriberType.FUNASR_NANO.value,
+            "label": "Fun-ASR-Nano",
+            "description": "轻量级，支持31种语言"
+        },
+        {
+            "value": TranscriberType.DEEPGRAM.value,
+            "label": "Deepgram",
+            "description": "云端API，需要API Key"
+        },
+        {
+            "value": TranscriberType.GROQ.value,
+            "label": "Groq",
+            "description": "云端API，需要API Key"
+        },
+        {
+            "value": TranscriberType.BCUT.value,
+            "label": "必剪",
+            "description": "B站官方转写"
+        },
+        {
+            "value": TranscriberType.KUAISHOU.value,
+            "label": "快手",
+            "description": "快手官方转写"
+        },
+    ]
+    
+    # 如果是 Apple 平台，添加 MLX Whisper
+    import platform
+    if platform.system() == "Darwin":
+        transcribers.insert(1, {
+            "value": TranscriberType.MLX_WHISPER.value,
+            "label": "MLX Whisper",
+            "description": "Apple 芯片优化版本"
+        })
+    
+    # 获取当前配置
+    current_transcriber = os.getenv("TRANSCRIBER_TYPE", "fast-whisper")
+    
+    return R.success({
+        "transcribers": transcribers,
+        "current": current_transcriber
+    })
+
+
+@router.post("/transcriber/set")
+def set_transcriber(data: dict):
+    """设置当前使用的转写器"""
+    transcriber_type = data.get("transcriber_type")
+    
+    if not transcriber_type:
+        return R.error("请提供 transcriber_type 参数")
+    
+    # 更新 .env 文件
+    from pathlib import Path
+    env_file = Path(".env")
+    
+    if env_file.exists():
+        lines = env_file.read_text(encoding="utf-8").splitlines()
+        updated = False
+        
+        for i, line in enumerate(lines):
+            if line.startswith("TRANSCRIBER_TYPE="):
+                lines[i] = f"TRANSCRIBER_TYPE={transcriber_type}"
+                updated = True
+                break
+        
+        if not updated:
+            lines.append(f"TRANSCRIBER_TYPE={transcriber_type}")
+        
+        env_file.write_text("\n".join(lines), encoding="utf-8")
+        
+        # 更新环境变量
+        os.environ["TRANSCRIBER_TYPE"] = transcriber_type
+        
+        return R.success({"message": f"转写器已切换到 {transcriber_type}，重启后生效"})
+    else:
+        return R.error(".env 文件不存在")
+
+
 class RecordRequest(BaseModel):
     video_id: str
     platform: str
@@ -49,6 +146,7 @@ class VideoRequest(BaseModel):
     video_understanding: Optional[bool] = False
     video_interval: Optional[int] = 0
     grid_size: Optional[list] = []
+    process_playlist: Optional[bool] = False  # 是否处理合集
 
     @field_validator("video_url")
     def validate_supported_url(cls, v):
@@ -76,7 +174,7 @@ def save_note_to_file(task_id: str, note):
 def run_note_task(task_id: str, video_url: str, platform: str, quality: DownloadQuality,
                   link: bool = False, screenshot: bool = False, model_name: str = None, provider_id: str = None,
                   _format: list = None, style: str = None, extras: str = None, video_understanding: bool = False,
-                  video_interval=0, grid_size=[]
+                  video_interval=0, grid_size=[], process_playlist: bool = False
                   ):
 
     if not model_name or not provider_id:
@@ -93,10 +191,11 @@ def run_note_task(task_id: str, video_url: str, platform: str, quality: Download
         _format=_format,
         style=style,
         extras=extras,
-        screenshot=screenshot
-        , video_understanding=video_understanding,
+        screenshot=screenshot,
+        video_understanding=video_understanding,
         video_interval=video_interval,
-        grid_size=grid_size
+        grid_size=grid_size,
+        process_playlist=process_playlist
     )
     logger.info(f"Note generated: {task_id}")
     if not note or not note.markdown:
@@ -153,7 +252,8 @@ def generate_note(data: VideoRequest, background_tasks: BackgroundTasks):
 
         background_tasks.add_task(run_note_task, task_id, data.video_url, data.platform, data.quality, data.link,
                                   data.screenshot, data.model_name, data.provider_id, data.format, data.style,
-                                  data.extras, data.video_understanding, data.video_interval, data.grid_size)
+                                  data.extras, data.video_understanding, data.video_interval, data.grid_size,
+                                  data.process_playlist)
         return R.success({"task_id": task_id})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

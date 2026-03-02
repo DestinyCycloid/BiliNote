@@ -58,6 +58,7 @@ const formSchema = z
       .tuple([z.coerce.number().min(1).max(10), z.coerce.number().min(1).max(10)])
       .default([3, 3])
       .optional(),
+    process_playlist: z.boolean().optional(),  // 新增：是否处理合集
   })
   .superRefine(({ video_url, platform }, ctx) => {
     if (platform === 'local') {
@@ -147,6 +148,7 @@ const NoteForm = () => {
       video_interval: 4,
       grid_size: [3, 3],
       format: [],
+      process_playlist: false,  // 默认不处理合集
     },
   })
   const currentTask = getCurrentTask()
@@ -184,6 +186,7 @@ const NoteForm = () => {
       video_interval: formData.video_interval ?? 4,
       grid_size: formData.grid_size ?? [3, 3],
       format: formData.format ?? [],
+      process_playlist: formData.process_playlist ?? false,  // 新增
     })
   }, [
     // 当下面任意一个变了，就重新 reset
@@ -525,6 +528,39 @@ const NoteForm = () => {
               className="text-sm"
             />
           </div>
+
+          {/* 合集处理 */}
+          <SectionHeader title="合集处理" tip="如果是合集视频，将下载并整合所有视频的笔记" />
+          <FormField
+            control={form.control}
+            name="process_playlist"
+            render={({ field }) => (
+              <FormItem>
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    checked={field.value}
+                    onCheckedChange={field.onChange}
+                  />
+                  <FormLabel className="cursor-pointer" onClick={() => field.onChange(!field.value)}>
+                    处理合集（将下载合集中的所有视频并整合笔记）
+                  </FormLabel>
+                </div>
+                <Alert
+                  type="warning"
+                  message={
+                    <div>
+                      <strong>注意：</strong>
+                      <p>• 合集处理时间 = 单个视频时间 × 视频数量</p>
+                      <p>• 会下载所有视频的音频文件</p>
+                      <p>• 最终笔记将以每个视频标题作为章节标题</p>
+                    </div>
+                  }
+                  className="mt-2 text-sm"
+                />
+                <FormMessage />
+              </FormItem>
+            )}
+          />
 
           {/* 笔记格式 */}
           <FormField

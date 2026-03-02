@@ -23,7 +23,7 @@ click-repl==0.3.0
 colorama==0.4.6
 coloredlogs==15.0.1
 cssselect2==0.8.0
-ctranslate2==4.5.0
+ctranslate2==4.6.3
 distro==1.9.0
 dnspython==2.7.0
 email_validator==2.2.0
@@ -125,3 +125,8 @@ websockets==15.0.1
 yarl==1.19.0
 yt-dlp==2025.3.31
 zopfli==0.2.3.post1
+
+# Qwen3-ASR 语音识别 (可选，使用时取消注释)
+# qwen-asr>=0.1.0
+# torch>=2.0.0
+# flash-attn>=2.0.0  # 可选，加速推理

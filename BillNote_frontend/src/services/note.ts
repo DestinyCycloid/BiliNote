@@ -14,6 +14,7 @@ export const generateNote = async (data: {
   video_understand?: boolean
   video_interval?: number
   grid_size: Array<number>
+  process_playlist?: boolean  // 新增：是否处理合集
 }) => {
   try {
     console.log('generateNote', data)

@@ -143,13 +143,26 @@ const MarkdownViewer: FC<MarkdownViewerProps> = ({ status }) => {
   }
 
   if (status === 'loading') {
+    const isPlaylist = currentTask?.formData?.process_playlist
+    const statusMessage = taskStatus === 'DOWNLOADING' && isPlaylist
+      ? '正在下载合集...'
+      : taskStatus === 'TRANSCRIBING' && isPlaylist
+      ? '正在转写合集视频...（可能需要较长时间）'
+      : taskStatus === 'SUMMARIZING' && isPlaylist
+      ? '正在生成合集笔记...'
+      : '正在生成笔记，请稍候…'
+    
+    const tipMessage = isPlaylist
+      ? '合集处理时间较长，请耐心等待'
+      : '这可能需要几秒钟时间，取决于视频长度'
+    
     return (
       <div className="flex h-screen w-full flex-col items-center justify-center space-y-4 text-neutral-500">
         <StepBar steps={steps} currentStep={taskStatus} />
         <Loading className="h-5 w-5" />
         <div className="text-center text-sm">
-          <p className="text-lg font-bold">正在生成笔记，请稍候…</p>
-          <p className="mt-2 text-xs text-neutral-500">这可能需要几秒钟时间，取决于视频长度</p>
+          <p className="text-lg font-bold">{statusMessage}</p>
+          <p className="mt-2 text-xs text-neutral-500">{tipMessage}</p>
         </div>
       </div>
     )

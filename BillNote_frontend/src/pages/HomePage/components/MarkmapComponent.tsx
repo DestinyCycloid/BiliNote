@@ -3,7 +3,6 @@ import { Markmap } from 'markmap-view'
 import { transformer } from '@/lib/markmap.ts'
 import { Toolbar } from 'markmap-toolbar'
 import 'markmap-toolbar/dist/style.css'
-import JSZip from 'jszip'
 
 export interface MarkmapEditorProps {
   /** 要渲染的 Markdown 文本 */
@@ -117,207 +116,12 @@ export default function MarkmapEditor({
     }
   };
 
-  // 导出SVG思维导图（矢量图）
-  const exportSvg = async () => {
-    try {
-      if (!svgRef.current || !mmRef.current) return;
-
-      const svgEl = svgRef.current;
-      const mm = mmRef.current;
-
-      // 先调用fit()确保显示完整的思维导图内容
-      await mm.fit();
-      // 等待渲染完成
-      await new Promise(resolve => setTimeout(resolve, 100));
-
-      // 克隆SVG以避免修改原始SVG
-      const clonedSvg = svgEl.cloneNode(true) as SVGSVGElement;
-
-      // 获取SVG内容的实际边界框
-      const gElement = svgEl.querySelector('g');
-      if (gElement) {
-        const bbox = gElement.getBBox();
-        // 添加一些边距
-        const padding = 50;
-        const viewBoxX = bbox.x - padding;
-        const viewBoxY = bbox.y - padding;
-        const viewBoxWidth = bbox.width + padding * 2;
-        const viewBoxHeight = bbox.height + padding * 2;
-
-        // 设置viewBox以确保SVG可以无限缩放
-        clonedSvg.setAttribute('viewBox', `${viewBoxX} ${viewBoxY} ${viewBoxWidth} ${viewBoxHeight}`);
-        // 移除固定尺寸，让SVG根据viewBox自适应
-        clonedSvg.removeAttribute('width');
-        clonedSvg.removeAttribute('height');
-        // 设置默认尺寸为100%，可以在任何容器中自适应
-        clonedSvg.setAttribute('width', '100%');
-        clonedSvg.setAttribute('height', '100%');
-        // 保持宽高比
-        clonedSvg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-      }
-
-      // 设置SVG的背景为白色
-      const style = document.createElementNS('http://www.w3.org/2000/svg', 'style');
-      style.textContent = 'svg { background-color: white; }';
-      clonedSvg.insertBefore(style, clonedSvg.firstChild);
-
-      // 添加白色背景矩形（确保背景在所有查看器中都是白色）
-      const bgRect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-      const viewBox = clonedSvg.getAttribute('viewBox')?.split(' ').map(Number) || [0, 0, 800, 600];
-      bgRect.setAttribute('x', viewBox[0].toString());
-      bgRect.setAttribute('y', viewBox[1].toString());
-      bgRect.setAttribute('width', viewBox[2].toString());
-      bgRect.setAttribute('height', viewBox[3].toString());
-      bgRect.setAttribute('fill', 'white');
-      // 插入到最前面作为背景
-      const firstG = clonedSvg.querySelector('g');
-      if (firstG) {
-        clonedSvg.insertBefore(bgRect, firstG);
-      } else {
-        clonedSvg.insertBefore(bgRect, clonedSvg.firstChild);
-      }
-
-      // 确保SVG有正确的命名空间
-      clonedSvg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
-      clonedSvg.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink');
-
-      // 序列化SVG
-      const svgData = new XMLSerializer().serializeToString(clonedSvg);
-
-      // 创建下载
-      const blob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${title || 'mindmap'}.svg`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    } catch (error) {
-      console.error('导出SVG失败:', error);
-    }
-  };
-
-  // 导出XMind格式思维导图
-  const exportXMind = async () => {
-    try {
-      const { root } = transformer.transform(value);
-
-      // 生成唯一ID
-      const generateId = () => Math.random().toString(36).substring(2, 15);
-
-      // 解码HTML实体（如 &#x5b9e; -> 实，&#12345; -> 对应字符）
-      const decodeHtmlEntities = (text: string): string => {
-        if (!text) return text;
-
-        // 首先手动处理十六进制数字实体 &#xHHHH;
-        let decoded = text.replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => {
-          return String.fromCodePoint(parseInt(hex, 16));
-        });
-
-        // 处理十进制数字实体 &#DDDD;
-        decoded = decoded.replace(/&#(\d+);/g, (_, dec) => {
-          return String.fromCodePoint(parseInt(dec, 10));
-        });
-
-        // 使用textarea处理命名实体（如 &amp; &lt; &gt; 等）
-        const textarea = document.createElement('textarea');
-        textarea.innerHTML = decoded;
-        return textarea.value;
-      };
-
-      // 清理HTML标签，只保留纯文本
-      const stripHtml = (html: string): string => {
-        if (!html) return html;
-        // 先解码HTML实体
-        let text = decodeHtmlEntities(html);
-        // 移除HTML标签
-        const div = document.createElement('div');
-        div.innerHTML = text;
-        return div.textContent || div.innerText || text;
-      };
-
-      // 将 markmap 节点转换为 XMind 节点格式
-      const convertToXMindNode = (node: any, isRoot = false): any => {
-        const rawTitle = node.content || node.payload?.content || '未命名';
-        const xmindNode: any = {
-          id: generateId(),
-          class: isRoot ? 'topic' : 'topic',
-          title: stripHtml(rawTitle),
-        };
-
-        if (node.children && node.children.length > 0) {
-          xmindNode.children = {
-            attached: node.children.map((child: any) => convertToXMindNode(child, false))
-          };
-        }
-
-        return xmindNode;
-      };
-
-      const rootTopic = convertToXMindNode(root, true);
-      const sheetId = generateId();
-
-      // XMind content.json 结构
-      const content = [{
-        id: sheetId,
-        class: 'sheet',
-        title: stripHtml(title) || '思维导图',
-        rootTopic: rootTopic,
-        topicPositioning: 'fixed'
-      }];
-
-      // XMind metadata.json
-      const metadata = {
-        creator: {
-          name: 'BiliNote',
-          version: '1.0.0'
-        }
-      };
-
-      // XMind manifest.json
-      const manifest = {
-        'file-entries': {
-          'content.json': {},
-          'metadata.json': {}
-        }
-      };
-
-      // 使用 JSZip 创建 .xmind 文件
-      // 直接传入字符串，JSZip会自动处理UTF-8编码
-      const zip = new JSZip();
-      zip.file('content.json', JSON.stringify(content, null, 2));
-      zip.file('metadata.json', JSON.stringify(metadata, null, 2));
-      zip.file('manifest.json', JSON.stringify(manifest, null, 2));
-
-      // 生成 ZIP 并下载
-      const blob = await zip.generateAsync({ type: 'blob' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${title || 'mindmap'}.xmind`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    } catch (error) {
-      console.error('导出XMind失败:', error);
-    }
-  };
-
   // 导出PNG思维导图
-  const exportPng = async () => {
+  const exportPng = () => {
     try {
-      if (!svgRef.current || !mmRef.current) return;
-
+      if (!svgRef.current) return;
+      
       const svgEl = svgRef.current;
-      const mm = mmRef.current;
-
-      // 先调用fit()确保显示完整的思维导图内容
-      await mm.fit();
-      // 等待渲染完成
-      await new Promise(resolve => setTimeout(resolve, 100));
       
       // 获取SVG实际尺寸
       const svgWidth = svgEl.width.baseVal.value || svgEl.clientWidth || 800;
@@ -442,30 +246,16 @@ export default function MarkmapEditor({
       {/* 全屏/退出全屏 按钮 */}
       <div className="absolute top-2 right-2 z-20 flex space-x-2">
         <button
-          onClick={exportXMind}
-          className="rounded p-1 hover:bg-gray-200"
-          title="导出XMind格式"
-        >
-          🧠
-        </button>
-        <button
-          onClick={exportSvg}
-          className="rounded p-1 hover:bg-gray-200"
-          title="导出SVG矢量图（可无限放大）"
-        >
-          📐
-        </button>
-        <button
           onClick={exportPng}
           className="rounded p-1 hover:bg-gray-200"
-          title="导出PNG图片"
+          title="导出PNG思维导图"
         >
           🖼️
         </button>
         <button
           onClick={exportHtml}
           className="rounded p-1 hover:bg-gray-200"
-          title="导出HTML（可交互）"
+          title="导出HTML思维导图"
         >
           💾
         </button>

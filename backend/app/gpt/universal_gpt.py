@@ -20,10 +20,14 @@ class UniversalGPT(GPT):
         return str(timedelta(seconds=int(seconds)))[2:]
 
     def _build_segment_text(self, segments: List[TranscriptSegment]) -> str:
-        return "\n".join(
-            f"{self._format_time(seg.start)} - {seg.text.strip()}"
-            for seg in segments
-        )
+        segment_texts = []
+        for seg in segments:
+            text = seg.text.strip()
+            time_str = self._format_time(seg.start)
+            segment_text = f"{time_str} - {text}"
+            segment_texts.append(segment_text)
+        
+        return "\n".join(segment_texts)
 
     def ensure_segments_type(self, segments) -> List[TranscriptSegment]:
         return [TranscriptSegment(**seg) if isinstance(seg, dict) else seg for seg in segments]

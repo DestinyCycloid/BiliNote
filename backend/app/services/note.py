@@ -94,6 +94,7 @@ class NoteGenerator:
         video_understanding: bool = False,
         video_interval: int = 0,
         grid_size: Optional[List[int]] = None,
+        process_playlist: bool = False,
     ) -> NoteResult | None:
         """
         主流程：按步骤依次下载、转写、GPT 总结、截图/链接处理、存库、返回 NoteResult。
@@ -113,20 +114,41 @@ class NoteGenerator:
         :param video_understanding: 是否需要视频拼图理解（生成缩略图）
         :param video_interval: 视频帧截取间隔（秒），仅在 video_understanding 为 True 时生效
         :param grid_size: 生成缩略图时的网格大小，如 [3, 3]
+        :param process_playlist: 是否处理合集（默认 False）
         :return: NoteResult 对象，包含 markdown 文本、转写结果和音频元信息
         """
         if grid_size is None:
             grid_size = []
 
         try:
-            logger.info(f"开始生成笔记 (task_id={task_id})")
+            logger.info(f"开始生成笔记 (task_id={task_id}, process_playlist={process_playlist})")
             self._update_status(task_id, TaskStatus.PARSING)
 
             # 获取下载器与 GPT 实例
-
             downloader = self._get_downloader(platform)
             gpt = self._get_gpt(model_name, provider_id)
 
+            # 如果启用合集处理，先检测是否为合集
+            if process_playlist:
+                return self._generate_playlist(
+                    video_url=video_url,
+                    platform=platform,
+                    quality=quality,
+                    task_id=task_id,
+                    downloader=downloader,
+                    gpt=gpt,
+                    link=link,
+                    screenshot=screenshot,
+                    _format=_format,
+                    style=style,
+                    extras=extras,
+                    output_path=output_path,
+                    video_understanding=video_understanding,
+                    video_interval=video_interval,
+                    grid_size=grid_size,
+                )
+
+            # 单个视频处理（原有逻辑）
             # 缓存文件路径
             audio_cache_file = NOTE_OUTPUT_DIR / f"{task_id}_audio.json"
             transcript_cache_file = NOTE_OUTPUT_DIR / f"{task_id}_transcript.json"
@@ -147,15 +169,11 @@ class NoteGenerator:
                 grid_size=grid_size,
             )
 
-            # 2. 获取字幕/转写文字
-            # 优先尝试获取平台字幕，没有再 fallback 到音频转写
-            transcript = self._get_transcript(
-                downloader=downloader,
-                video_url=video_url,
+            # 2. 转写文字
+            transcript = self._transcribe_audio(
                 audio_file=audio_meta.file_path,
                 transcript_cache_file=transcript_cache_file,
                 status_phase=TaskStatus.TRANSCRIBING,
-                task_id=task_id,
             )
 
             # 3. GPT 总结
@@ -193,6 +211,151 @@ class NoteGenerator:
 
         except Exception as exc:
             logger.error(f"生成笔记流程异常 (task_id={task_id})：{exc}", exc_info=True)
+            self._update_status(task_id, TaskStatus.FAILED, message=str(exc))
+            return None
+
+    def _generate_playlist(
+        self,
+        video_url: str,
+        platform: str,
+        quality: DownloadQuality,
+        task_id: str,
+        downloader: Downloader,
+        gpt: GPT,
+        link: bool,
+        screenshot: bool,
+        _format: List[str],
+        style: Optional[str],
+        extras: Optional[str],
+        output_path: Optional[str],
+        video_understanding: bool,
+        video_interval: int,
+        grid_size: List[int],
+    ) -> NoteResult | None:
+        """
+        处理合集视频：下载所有视频，分别转写和生成笔记，最后合并成一个 markdown
+        
+        :return: 合并后的 NoteResult
+        """
+        try:
+            logger.info(f"检测到合集处理请求 (task_id={task_id})")
+            self._update_status(task_id, TaskStatus.DOWNLOADING, message="正在下载合集...")
+            
+            # 下载合集（返回列表或单个）
+            audio_results = downloader.download(
+                video_url=video_url,
+                quality=quality,
+                output_dir=output_path,
+                process_playlist=True
+            )
+            
+            # 如果不是列表，说明不是合集，按单个视频处理
+            if not isinstance(audio_results, list):
+                logger.info("不是合集，按单个视频处理")
+                audio_results = [audio_results]
+            
+            total_videos = len(audio_results)
+            logger.info(f"合集共 {total_videos} 个视频")
+            
+            if total_videos == 1:
+                # 只有一个视频，不需要合并，直接处理
+                logger.info("合集只有1个视频，按单个视频处理")
+                # 递归调用，但不处理合集
+                return self.generate(
+                    video_url=video_url,
+                    platform=platform,
+                    quality=quality,
+                    task_id=task_id,
+                    model_name=gpt.model_name if hasattr(gpt, 'model_name') else None,
+                    provider_id=gpt.provider_id if hasattr(gpt, 'provider_id') else None,
+                    link=link,
+                    screenshot=screenshot,
+                    _format=_format,
+                    style=style,
+                    extras=extras,
+                    output_path=output_path,
+                    video_understanding=video_understanding,
+                    video_interval=video_interval,
+                    grid_size=grid_size,
+                    process_playlist=False  # 关键：不再处理合集
+                )
+            
+            # 处理多个视频
+            all_markdowns = []
+            all_transcripts = []
+            first_audio_meta = audio_results[0]  # 使用第一个视频的元信息
+            
+            for idx, audio_meta in enumerate(audio_results, 1):
+                logger.info(f"处理第 {idx}/{total_videos} 个视频: {audio_meta.title}")
+                self._update_status(
+                    task_id, 
+                    TaskStatus.TRANSCRIBING, 
+                    message=f"正在处理第 {idx}/{total_videos} 个视频..."
+                )
+                
+                # 转写
+                transcript_cache_file = NOTE_OUTPUT_DIR / f"{task_id}_transcript_{idx}.json"
+                transcript = self._transcribe_audio(
+                    audio_file=audio_meta.file_path,
+                    transcript_cache_file=transcript_cache_file,
+                    status_phase=TaskStatus.TRANSCRIBING,
+                )
+                all_transcripts.append(transcript)
+                
+                # GPT 总结
+                markdown_cache_file = NOTE_OUTPUT_DIR / f"{task_id}_markdown_{idx}.md"
+                markdown = self._summarize_text(
+                    audio_meta=audio_meta,
+                    transcript=transcript,
+                    gpt=gpt,
+                    markdown_cache_file=markdown_cache_file,
+                    link=link,
+                    screenshot=screenshot,
+                    formats=_format or [],
+                    style=style,
+                    extras=extras,
+                    video_img_urls=self.video_img_urls,
+                )
+                
+                # 添加章节标题
+                chapter_markdown = f"# {audio_meta.title}\n\n{markdown}\n\n"
+                all_markdowns.append(chapter_markdown)
+            
+            # 合并所有 markdown
+            combined_markdown = "\n".join(all_markdowns)
+            
+            # 保存合并后的 markdown
+            combined_cache_file = NOTE_OUTPUT_DIR / f"{task_id}_markdown.md"
+            combined_cache_file.write_text(combined_markdown, encoding="utf-8")
+            
+            # 合并转写结果（可选，用于调试）
+            combined_transcript = TranscriptResult(
+                language=all_transcripts[0].language if all_transcripts else "zh",
+                full_text="\n\n".join([t.full_text for t in all_transcripts]),
+                segments=[],  # 合集不需要详细的时间戳
+                raw={"playlist": True, "total_videos": total_videos}
+            )
+            
+            # 保存记录
+            self._update_status(task_id, TaskStatus.SAVING)
+            self._save_metadata(
+                video_id=first_audio_meta.video_id, 
+                platform=platform, 
+                task_id=task_id
+            )
+            
+            # 完成
+            self._update_status(task_id, TaskStatus.SUCCESS)
+            logger.info(f"合集笔记生成成功 (task_id={task_id}, 共 {total_videos} 个视频)")
+            
+            return NoteResult(
+                markdown=combined_markdown,
+                transcript=combined_transcript,
+                audio_meta=first_audio_meta
+            )
+            
+        except Exception as exc:
+            logger.error(f"合集处理异常 (task_id={task_id})：{exc}", exc_info=True)
             self._update_status(task_id, TaskStatus.FAILED, message=str(exc))
             return None
 
@@ -403,62 +566,6 @@ class NoteGenerator:
             self._handle_exception(task_id, exc)
             raise
 
-
-    def _get_transcript(
-        self,
-        downloader: Downloader,
-        video_url: str,
-        audio_file: str,
-        transcript_cache_file: Path,
-        status_phase: TaskStatus,
-        task_id: Optional[str] = None,
-    ) -> TranscriptResult | None:
-        """
-        优先获取平台字幕，没有则 fallback 到音频转写
-
-        :param downloader: 下载器实例
-        :param video_url: 视频链接
-        :param audio_file: 音频文件路径（用于 fallback 转写）
-        :param transcript_cache_file: 缓存文件路径
-        :param status_phase: 状态枚举
-        :param task_id: 任务 ID
-        :return: TranscriptResult 对象
-        """
-        self._update_status(task_id, status_phase)
-
-        # 已有缓存，直接返回
-        if transcript_cache_file.exists():
-            logger.info(f"检测到转写缓存 ({transcript_cache_file})，尝试读取")
-            try:
-                data = json.loads(transcript_cache_file.read_text(encoding="utf-8"))
-                segments = [TranscriptSegment(**seg) for seg in data.get("segments", [])]
-                return TranscriptResult(language=data.get("language"), full_text=data["full_text"], segments=segments)
-            except Exception as e:
-                logger.warning(f"加载转写缓存失败，将重新获取：{e}")
-
-        # 1. 先尝试获取平台字幕
-        logger.info("尝试获取平台字幕...")
-        try:
-            transcript = downloader.download_subtitles(video_url)
-            if transcript and transcript.segments:
-                logger.info(f"成功获取平台字幕，共 {len(transcript.segments)} 段")
-                # 缓存结果
-                transcript_cache_file.write_text(
-                    json.dumps(asdict(transcript), ensure_ascii=False, indent=2),
-                    encoding="utf-8"
-                )
-                return transcript
-            else:
-                logger.info("平台无可用字幕，将使用音频转写")
-        except Exception as e:
-            logger.warning(f"获取平台字幕失败: {e}，将使用音频转写")
-
-        # 2. Fallback 到音频转写
-        return self._transcribe_audio(
-            audio_file=audio_file,
-            transcript_cache_file=transcript_cache_file,
-            status_phase=status_phase,
-        )
 
     def _transcribe_audio(
         self,
