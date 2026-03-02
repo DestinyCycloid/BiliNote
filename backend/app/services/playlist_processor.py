@@ -20,8 +20,9 @@ from app.models.audio_model import AudioDownloadResult
 from app.models.transcriber_model import TranscriptResult
 from app.gpt.base import GPT
 from app.transcriber.base import Transcriber
+from app.utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -220,29 +221,38 @@ class SimpleThreadPipeline:
                     os.makedirs(output_directory, exist_ok=True)
                     
                     # 下载音频
-                    audio.file_path = downloader.download_single_audio(
+                    result = downloader.download_single_audio(
                         audio_result=audio,
                         output_dir=output_directory,
                     )
                     
+                    # 解包返回值
+                    if isinstance(result, tuple):
+                        audio.file_path, real_title = result
+                        if real_title:
+                            audio.title = real_title
+                    else:
+                        audio.file_path = result
+                    
                     download_time = time.time() - download_start
-                    logger.info(f"[{idx+1}/{total}] 下载完成，耗时 {download_time:.1f}秒")
+                    logger.info(f"[{idx+1}/{total}] 下载完成，耗时 {download_time:.1f}秒，标题: {audio.title}")
                 else:
                     logger.info(f"[{idx+1}/{total}] 音频已存在，跳过下载: {audio.file_path}")
             
-            # 1. 转写
+            # 1. 转写（带重试机制）
             logger.info(f"[{idx+1}/{total}] 开始转写 (转写器: {self.transcriber_type})")
-            transcript = self.transcriber.transcript(file_path=audio.file_path)
+            transcript = self._transcribe_with_retry(audio.file_path, idx, total)
+            
             self.stats.transcribed += 1
             
             if progress_callback:
                 progress_callback(self.stats)
             
             transcribe_time = time.time() - start_time
-            logger.info(f"[{idx+1}/{total}] 转写完成，耗时 {transcribe_time:.1f}秒")
+            logger.info(f"[{idx+1}/{total}] ✅ 转写完成，耗时 {transcribe_time:.1f}秒")
             
             # 2. GPT 总结
-            logger.info(f"[{idx+1}/{total}] 开始 GPT 总结")
+            logger.info(f"[{idx+1}/{total}] 🔥 开始 GPT 总结: {audio.title}")
             gpt_start = time.time()
             
             # 构造 GPT 输入
@@ -259,7 +269,7 @@ class SimpleThreadPipeline:
             total_time = time.time() - start_time
             
             logger.info(
-                f"[{idx+1}/{total}] 处理完成，"
+                f"[{idx+1}/{total}] ✅ GPT 总结完成: {audio.title}，"
                 f"转写: {transcribe_time:.1f}s, GPT: {gpt_time:.1f}s, "
                 f"总计: {total_time:.1f}s"
             )
@@ -269,6 +279,55 @@ class SimpleThreadPipeline:
         except Exception as e:
             logger.error(f"[{idx+1}/{total}] 处理失败: {e}", exc_info=True)
             raise
+    
+    def _transcribe_with_retry(self, file_path: str, idx: int, total: int, max_retries: int = 3) -> any:
+        """
+        带重试机制的转写方法
+        
+        :param file_path: 音频文件路径
+        :param idx: 视频索引
+        :param total: 总视频数
+        :param max_retries: 最大重试次数（默认3次）
+        :return: 转写结果
+        """
+        import time as time_module
+        
+        for attempt in range(max_retries):
+            try:
+                return self.transcriber.transcript(file_path=file_path)
+            except Exception as e:
+                # 检查是否是可重试的错误
+                should_retry = False
+                error_str = str(e)
+                error_type = type(e).__name__
+                
+                # 检查是否是429限流错误
+                if "429" in error_str or "Too Many Requests" in error_str or "status_code: 429" in error_str:
+                    should_retry = True
+                    error_reason = "429限流"
+                # 检查是否是超时错误
+                elif "timeout" in error_str.lower() or "ReadTimeout" in error_type or "TimeoutError" in error_type:
+                    should_retry = True
+                    error_reason = "网络超时"
+                # 检查是否是连接错误
+                elif "ConnectionError" in error_type or "ConnectTimeout" in error_type:
+                    should_retry = True
+                    error_reason = "连接失败"
+                
+                # 如果是可重试的错误且还有重试机会
+                if should_retry and attempt < max_retries - 1:
+                    wait_time = (attempt + 1) * 3  # 指数退避：3秒、6秒、9秒
+                    logger.warning(
+                        f"[{idx+1}/{total}] 转写遇到{error_reason}错误，"
+                        f"等待 {wait_time} 秒后重试 (第 {attempt + 1}/{max_retries} 次)"
+                    )
+                    time_module.sleep(wait_time)
+                    continue
+                else:
+                    # 不是可重试的错误，或者已经用完重试次数
+                    if should_retry:
+                        logger.error(f"[{idx+1}/{total}] 转写失败：已重试 {max_retries} 次仍然失败 ({error_reason})")
+                    raise
 
 
 class AsyncPipeline:

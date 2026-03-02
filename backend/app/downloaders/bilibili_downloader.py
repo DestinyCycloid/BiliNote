@@ -148,7 +148,7 @@ class BilibiliDownloader(Downloader, ABC):
         audio_result: AudioDownloadResult,
         output_dir: str,
         quality: DownloadQuality = "fast"
-    ) -> str:
+    ) -> tuple[str, str]:
         """
         下载单个视频的音频（用于并行下载）
         
@@ -158,7 +158,7 @@ class BilibiliDownloader(Downloader, ABC):
             quality: 音频质量
             
         Returns:
-            音频文件路径
+            (音频文件路径, 真实标题)
         """
         # 确保输出目录存在
         os.makedirs(output_dir, exist_ok=True)
@@ -192,6 +192,7 @@ class BilibiliDownloader(Downloader, ABC):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(video_url, download=True)
             video_id = info.get("id")
+            real_title = info.get("title", audio_result.title)  # 获取真实标题
             
             # 处理分P视频的文件名
             if "?p=" in video_id:
@@ -208,8 +209,8 @@ class BilibiliDownloader(Downloader, ABC):
         if not os.path.exists(audio_path):
             raise FileNotFoundError(f"音频文件下载失败: {audio_path}")
         
-        logger.info(f"音频下载完成: {audio_path}")
-        return audio_path
+        logger.info(f"音频下载完成: {audio_path}, 标题: {real_title}")
+        return audio_path, real_title
 
     def download_video(
         self,

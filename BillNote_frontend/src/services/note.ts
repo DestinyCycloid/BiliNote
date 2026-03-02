@@ -15,9 +15,9 @@ export const generateNote = async (data: {
   video_interval?: number
   grid_size: Array<number>
   process_playlist?: boolean  // 新增：是否处理合集
+  playlist_serial_mode?: boolean  // 新增：合集串行模式
 }) => {
   try {
-    console.log('generateNote', data)
     const response = await request.post('/generate_note', data)
 
     if (!response) {
@@ -28,17 +28,10 @@ export const generateNote = async (data: {
     }
     toast.success('笔记生成任务已提交！')
 
-    console.log('res', response)
-    // 成功提示
-
     return response
   } catch (e: any) {
     console.error('❌ 请求出错', e)
-
-    // 错误提示
-    // toast.error('笔记生成失败，请稍后重试')
-
-    throw e // 抛出错误以便调用方处理
+    throw e
   }
 }
 

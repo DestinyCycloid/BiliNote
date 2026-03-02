@@ -59,6 +59,7 @@ const formSchema = z
       .default([3, 3])
       .optional(),
     process_playlist: z.boolean().optional(),  // 新增：是否处理合集
+    playlist_serial_mode: z.boolean().optional(),  // 新增：合集串行模式
   })
   .superRefine(({ video_url, platform }, ctx) => {
     if (platform === 'local') {
@@ -149,6 +150,7 @@ const NoteForm = () => {
       grid_size: [3, 3],
       format: [],
       process_playlist: false,  // 默认不处理合集
+      playlist_serial_mode: false,  // 默认并行模式
     },
   })
   const currentTask = getCurrentTask()
@@ -156,6 +158,8 @@ const NoteForm = () => {
   /* ---- 派生状态（只 watch 一次，提高性能） ---- */
   const platform = useWatch({ control: form.control, name: 'platform' }) as string
   const videoUnderstandingEnabled = useWatch({ control: form.control, name: 'video_understanding' })
+  const processPlaylist = useWatch({ control: form.control, name: 'process_playlist' })
+  const playlistSerialMode = useWatch({ control: form.control, name: 'playlist_serial_mode' })
   const editing = currentTask && currentTask.id
 
   const goModelAdd = () => {
@@ -187,6 +191,7 @@ const NoteForm = () => {
       grid_size: formData.grid_size ?? [3, 3],
       format: formData.format ?? [],
       process_playlist: formData.process_playlist ?? false,  // 新增
+      playlist_serial_mode: formData.playlist_serial_mode ?? false,  // 新增
     })
   }, [
     // 当下面任意一个变了，就重新 reset
@@ -220,18 +225,26 @@ const NoteForm = () => {
   }
 
   const onSubmit = async (values: NoteFormValues) => {
-    console.log('Not even go here')
-    const payload: NoteFormValues = {
-      ...values,
-      provider_id: modelList.find(m => m.model_name === values.model_name)!.provider_id,
-      task_id: currentTaskId || '',
+    const foundModel = modelList.find(m => m.model_name === values.model_name)
+    
+    // 检查 provider_id 是否存在
+    if (!foundModel?.provider_id) {
+      console.error('未找到 provider_id，请重新选择模型')
+      return
     }
+    
+    // 先构造 payload，确保 provider_id 在最后设置
+    const payload: any = {
+      ...values,
+      task_id: currentTaskId || '',
+      provider_id: foundModel.provider_id,  // 放在最后，确保不会被覆盖
+    }
+    
     if (currentTaskId) {
       retryTask(currentTaskId, payload)
       return
     }
 
-    // message.success('已提交任务')
     const  data  = await generateNote(payload)
     addPendingTask(data.task_id, values.platform, payload)
   }
@@ -466,6 +479,7 @@ const NoteForm = () => {
                     <FormLabel>启用</FormLabel>
                     <Checkbox
                       checked={videoUnderstandingEnabled}
+                      disabled={processPlaylist && !playlistSerialMode}
                       onCheckedChange={v => form.setValue('video_understanding', v)}
                     />
                   </div>
@@ -531,36 +545,64 @@ const NoteForm = () => {
 
           {/* 合集处理 */}
           <SectionHeader title="合集处理" tip="如果是合集视频，将下载并整合所有视频的笔记" />
-          <FormField
-            control={form.control}
-            name="process_playlist"
-            render={({ field }) => (
-              <FormItem>
-                <div className="flex items-center gap-2">
-                  <Checkbox
-                    checked={field.value}
-                    onCheckedChange={field.onChange}
-                  />
-                  <FormLabel className="cursor-pointer" onClick={() => field.onChange(!field.value)}>
-                    处理合集（将下载合集中的所有视频并整合笔记）
-                  </FormLabel>
-                </div>
-                <Alert
-                  type="warning"
-                  message={
-                    <div>
-                      <strong>注意：</strong>
-                      <p>• 合集处理时间 = 单个视频时间 × 视频数量</p>
-                      <p>• 会下载所有视频的音频文件</p>
-                      <p>• 最终笔记将以每个视频标题作为章节标题</p>
+          <div className="flex flex-col gap-2">
+            <FormField
+              control={form.control}
+              name="process_playlist"
+              render={({ field }) => (
+                <FormItem>
+                  <div className="flex items-center gap-2">
+                    <Checkbox
+                      checked={field.value}
+                      onCheckedChange={field.onChange}
+                    />
+                    <FormLabel className="cursor-pointer" onClick={() => field.onChange(!field.value)}>
+                      处理合集（将下载合集中的所有视频并整合笔记）
+                    </FormLabel>
+                  </div>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            
+            {/* 串行模式选项 */}
+            {processPlaylist && (
+              <FormField
+                control={form.control}
+                name="playlist_serial_mode"
+                render={({ field }) => (
+                  <FormItem>
+                    <div className="ml-6 flex items-center gap-2">
+                      <Checkbox
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                      />
+                      <FormLabel className="cursor-pointer" onClick={() => field.onChange(!field.value)}>
+                        串行模式（逐个处理，支持原片截图和视频理解，速度较慢）
+                      </FormLabel>
                     </div>
-                  }
-                  className="mt-2 text-sm"
-                />
-                <FormMessage />
-              </FormItem>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
             )}
-          />
+            
+            <Alert
+              type="warning"
+              message={
+                <div>
+                  <strong>注意：</strong>
+                  <p>• 合集处理时间 = 单个视频时间 × 视频数量</p>
+                  <p>• 会下载所有视频的音频文件</p>
+                  <p>• 最终笔记将以每个视频标题作为章节标题</p>
+                  {processPlaylist && !playlistSerialMode && (
+                    <p>• 并行模式下不支持原片截图和视频理解功能</p>
+                  )}
+                </div>
+              }
+              className="mt-2 text-sm"
+            />
+          </div>
 
           {/* 笔记格式 */}
           <FormField
@@ -574,7 +616,7 @@ const NoteForm = () => {
                   onChange={field.onChange}
                   disabledMap={{
                     link: platform === 'local',
-                    screenshot: !videoUnderstandingEnabled,
+                    screenshot: (processPlaylist && !playlistSerialMode) || !videoUnderstandingEnabled,
                   }}
                 />
                 <FormMessage />

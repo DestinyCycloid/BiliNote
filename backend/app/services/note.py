@@ -95,6 +95,7 @@ class NoteGenerator:
         video_interval: int = 0,
         grid_size: Optional[List[int]] = None,
         process_playlist: bool = False,
+        playlist_serial_mode: bool = False,  # 新增：合集串行模式
     ) -> NoteResult | None:
         """
         主流程：按步骤依次下载、转写、GPT 总结、截图/链接处理、存库、返回 NoteResult。
@@ -115,6 +116,7 @@ class NoteGenerator:
         :param video_interval: 视频帧截取间隔（秒），仅在 video_understanding 为 True 时生效
         :param grid_size: 生成缩略图时的网格大小，如 [3, 3]
         :param process_playlist: 是否处理合集（默认 False）
+        :param playlist_serial_mode: 合集串行模式（默认 False，使用并行处理）
         :return: NoteResult 对象，包含 markdown 文本、转写结果和音频元信息
         """
         if grid_size is None:
@@ -137,6 +139,8 @@ class NoteGenerator:
                     task_id=task_id,
                     downloader=downloader,
                     gpt=gpt,
+                    model_name=model_name,  # 新增
+                    provider_id=provider_id,  # 新增
                     link=link,
                     screenshot=screenshot,
                     _format=_format,
@@ -146,6 +150,7 @@ class NoteGenerator:
                     video_understanding=video_understanding,
                     video_interval=video_interval,
                     grid_size=grid_size,
+                    playlist_serial_mode=playlist_serial_mode,  # 传递串行模式参数
                 )
 
             # 单个视频处理（原有逻辑）
@@ -213,8 +218,8 @@ class NoteGenerator:
             logger.error(f"生成笔记流程异常 (task_id={task_id})：{exc}", exc_info=True)
             self._update_status(task_id, TaskStatus.FAILED, message=str(exc))
             return None
-
-    def _generate_playlist(
+    
+    def _generate_playlist_serial(
         self,
         video_url: str,
         platform: str,
@@ -222,6 +227,8 @@ class NoteGenerator:
         task_id: str,
         downloader: Downloader,
         gpt: GPT,
+        model_name: str,  # 新增
+        provider_id: str,  # 新增
         link: bool,
         screenshot: bool,
         _format: List[str],
@@ -233,12 +240,193 @@ class NoteGenerator:
         grid_size: List[int],
     ) -> NoteResult | None:
         """
-        处理合集视频：下载所有视频，并行转写和生成笔记，最后合并成一个 markdown
+        串行处理合集视频：逐个下载、转写、生成笔记（支持原片截图和视频理解）
         
         :return: 合并后的 NoteResult
         """
         try:
-            logger.info(f"检测到合集处理请求 (task_id={task_id})")
+            logger.info(f"使用串行模式处理合集 (task_id={task_id})")
+            self._update_status(task_id, TaskStatus.DOWNLOADING, message="正在获取合集信息...")
+            
+            # 1. 获取合集中所有视频的URL列表
+            audio_results = downloader.download(
+                video_url=video_url,
+                quality=quality,
+                output_dir=output_path,
+                process_playlist=True
+            )
+            
+            # 如果不是列表，说明不是合集
+            if not isinstance(audio_results, list):
+                audio_results = [audio_results]
+            
+            total_videos = len(audio_results)
+            logger.info(f"合集共 {total_videos} 个视频，开始串行处理")
+            
+            if total_videos == 1:
+                # 只有一个视频，直接处理
+                return self.generate(
+                    video_url=video_url,
+                    platform=platform,
+                    quality=quality,
+                    task_id=task_id,
+                    model_name=model_name,  # 修复：直接使用传入的参数
+                    provider_id=provider_id,  # 修复：直接使用传入的参数
+                    link=link,
+                    screenshot=screenshot,
+                    _format=_format,
+                    style=style,
+                    extras=extras,
+                    output_path=output_path,
+                    video_understanding=video_understanding,
+                    video_interval=video_interval,
+                    grid_size=grid_size,
+                    process_playlist=False
+                )
+            
+            # 2. 逐个处理每个视频
+            markdowns = []
+            for idx, audio_meta in enumerate(audio_results, 1):
+                try:
+                    logger.info(f"[{idx}/{total_videos}] 开始处理: {audio_meta.title}")
+                    self._update_status(
+                        task_id,
+                        TaskStatus.DOWNLOADING,
+                        message=f"正在处理 {idx}/{total_videos}: {audio_meta.title}"
+                    )
+                    
+                    # 获取视频URL
+                    video_url_single = audio_meta.raw_info.get('webpage_url') or audio_meta.raw_info.get('url')
+                    if not video_url_single:
+                        original_id = audio_meta.raw_info.get('original_id', audio_meta.video_id)
+                        video_url_single = f"https://www.bilibili.com/video/{original_id}"
+                    
+                    # 使用原有的单视频处理流程（支持截图和视频理解）
+                    result = self.generate(
+                        video_url=video_url_single,
+                        platform=platform,
+                        quality=quality,
+                        task_id=f"{task_id}_video_{idx}",  # 每个视频使用独立的task_id
+                        model_name=model_name,  # 修复：直接使用传入的参数
+                        provider_id=provider_id,  # 修复：直接使用传入的参数
+                        link=link,
+                        screenshot=screenshot,
+                        _format=_format,
+                        style=style,
+                        extras=extras,
+                        output_path=output_path,
+                        video_understanding=video_understanding,
+                        video_interval=video_interval,
+                        grid_size=grid_size,
+                        process_playlist=False
+                    )
+                    
+                    if result:
+                        markdowns.append(f"# {audio_meta.title}\n\n{result.markdown}\n\n")
+                    else:
+                        markdowns.append(f"# {audio_meta.title}\n\n⚠️ 处理失败\n\n")
+                    
+                    logger.info(f"[{idx}/{total_videos}] 处理完成: {audio_meta.title}")
+                    
+                except Exception as e:
+                    logger.error(f"[{idx}/{total_videos}] 处理失败: {e}", exc_info=True)
+                    markdowns.append(f"# {audio_meta.title}\n\n⚠️ 处理失败: {str(e)}\n\n")
+            
+            # 3. 合并结果
+            combined_markdown = "\n".join(markdowns)
+            
+            # 4. 保存合并后的 markdown
+            combined_cache_file = NOTE_OUTPUT_DIR / f"{task_id}_markdown.md"
+            combined_cache_file.write_text(combined_markdown, encoding="utf-8")
+            
+            # 5. 构造合并的转写结果
+            combined_transcript = TranscriptResult(
+                language="zh",
+                full_text="\n\n".join([
+                    f"# {audio.title}\n[转写内容已省略]"
+                    for audio in audio_results
+                ]),
+                segments=[],
+                raw={"playlist": True, "total_videos": total_videos, "mode": "serial"}
+            )
+            
+            # 6. 保存记录到数据库
+            self._update_status(task_id, TaskStatus.SAVING)
+            first_audio_meta = audio_results[0]
+            self._save_metadata(
+                video_id=first_audio_meta.video_id,
+                platform=platform,
+                task_id=task_id
+            )
+            
+            # 7. 完成
+            self._update_status(task_id, TaskStatus.SUCCESS)
+            logger.info(f"合集笔记生成成功（串行模式，共 {total_videos} 个视频）")
+            
+            return NoteResult(
+                markdown=combined_markdown,
+                transcript=combined_transcript,
+                audio_meta=first_audio_meta
+            )
+            
+        except Exception as exc:
+            logger.error(f"串行处理合集异常 (task_id={task_id})：{exc}", exc_info=True)
+            self._update_status(task_id, TaskStatus.FAILED, message=str(exc))
+            return None
+
+    def _generate_playlist(
+        self,
+        video_url: str,
+        platform: str,
+        quality: DownloadQuality,
+        task_id: str,
+        downloader: Downloader,
+        gpt: GPT,
+        model_name: str,  # 新增
+        provider_id: str,  # 新增
+        link: bool,
+        screenshot: bool,
+        _format: List[str],
+        style: Optional[str],
+        extras: Optional[str],
+        output_path: Optional[str],
+        video_understanding: bool,
+        video_interval: int,
+        grid_size: List[int],
+        playlist_serial_mode: bool = False,  # 新增：串行模式参数
+    ) -> NoteResult | None:
+        """
+        处理合集视频：根据 playlist_serial_mode 选择并行或串行处理
+        
+        :param playlist_serial_mode: True=串行处理（逐个处理，支持截图），False=并行处理（快速但不支持截图）
+        :return: 合并后的 NoteResult
+        """
+        try:
+            logger.info(f"检测到合集处理请求 (task_id={task_id}, 串行模式={playlist_serial_mode})")
+            
+            # 如果是串行模式，使用原有的逐个处理逻辑
+            if playlist_serial_mode:
+                return self._generate_playlist_serial(
+                    video_url=video_url,
+                    platform=platform,
+                    quality=quality,
+                    task_id=task_id,
+                    downloader=downloader,
+                    gpt=gpt,
+                    model_name=model_name,  # 新增
+                    provider_id=provider_id,  # 新增
+                    link=link,
+                    screenshot=screenshot,
+                    _format=_format,
+                    style=style,
+                    extras=extras,
+                    output_path=output_path,
+                    video_understanding=video_understanding,
+                    video_interval=video_interval,
+                    grid_size=grid_size,
+                )
+            
+            # 并行模式
             self._update_status(task_id, TaskStatus.DOWNLOADING, message="正在下载合集...")
             
             # 1. 下载合集（返回列表或单个）
@@ -267,8 +455,8 @@ class NoteGenerator:
                     platform=platform,
                     quality=quality,
                     task_id=task_id,
-                    model_name=gpt.model_name if hasattr(gpt, 'model_name') else None,
-                    provider_id=gpt.provider_id if hasattr(gpt, 'provider_id') else None,
+                    model_name=model_name,  # 修复：使用传入的参数
+                    provider_id=provider_id,  # 修复：使用传入的参数
                     link=link,
                     screenshot=screenshot,
                     _format=_format,

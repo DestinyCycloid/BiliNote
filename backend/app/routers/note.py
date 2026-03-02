@@ -147,6 +147,7 @@ class VideoRequest(BaseModel):
     video_interval: Optional[int] = 0
     grid_size: Optional[list] = []
     process_playlist: Optional[bool] = False  # 是否处理合集
+    playlist_serial_mode: Optional[bool] = False  # 合集串行模式
 
     @field_validator("video_url")
     def validate_supported_url(cls, v):
@@ -174,7 +175,7 @@ def save_note_to_file(task_id: str, note):
 def run_note_task(task_id: str, video_url: str, platform: str, quality: DownloadQuality,
                   link: bool = False, screenshot: bool = False, model_name: str = None, provider_id: str = None,
                   _format: list = None, style: str = None, extras: str = None, video_understanding: bool = False,
-                  video_interval=0, grid_size=[], process_playlist: bool = False
+                  video_interval=0, grid_size=[], process_playlist: bool = False, playlist_serial_mode: bool = False
                   ):
 
     if not model_name or not provider_id:
@@ -195,7 +196,8 @@ def run_note_task(task_id: str, video_url: str, platform: str, quality: Download
         video_understanding=video_understanding,
         video_interval=video_interval,
         grid_size=grid_size,
-        process_playlist=process_playlist
+        process_playlist=process_playlist,
+        playlist_serial_mode=playlist_serial_mode,
     )
     logger.info(f"Note generated: {task_id}")
     if not note or not note.markdown:
@@ -230,7 +232,6 @@ async def upload(file: UploadFile = File(...)):
 @router.post("/generate_note")
 def generate_note(data: VideoRequest, background_tasks: BackgroundTasks):
     try:
-
         video_id = extract_video_id(data.video_url, data.platform)
         # if not video_id:
         #     raise HTTPException(status_code=400, detail="无法提取视频 ID")
@@ -250,10 +251,25 @@ def generate_note(data: VideoRequest, background_tasks: BackgroundTasks):
             # 正常新建任务
             task_id = str(uuid.uuid4())
 
-        background_tasks.add_task(run_note_task, task_id, data.video_url, data.platform, data.quality, data.link,
-                                  data.screenshot, data.model_name, data.provider_id, data.format, data.style,
-                                  data.extras, data.video_understanding, data.video_interval, data.grid_size,
-                                  data.process_playlist)
+        background_tasks.add_task(
+            run_note_task,
+            task_id=task_id,
+            video_url=data.video_url,
+            platform=data.platform,
+            quality=data.quality,
+            link=data.link,
+            screenshot=data.screenshot,
+            model_name=data.model_name,
+            provider_id=data.provider_id,
+            _format=data.format,
+            style=data.style,
+            extras=data.extras,
+            video_understanding=data.video_understanding,
+            video_interval=data.video_interval,
+            grid_size=data.grid_size,
+            process_playlist=data.process_playlist,
+            playlist_serial_mode=data.playlist_serial_mode,
+        )
         return R.success({"task_id": task_id})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
