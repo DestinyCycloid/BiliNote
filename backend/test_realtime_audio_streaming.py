@@ -297,13 +297,20 @@ class RealtimeAudioStreaming:
             self.is_recording = False
     
     def _audio_processing_thread(self):
-        """音频处理线程（流式转写）"""
+        """音频处理线程（流式转写）- 实时累积显示"""
         try:
             chunk_index = 0
+            all_sentences = []  # 保存完整的句子
+            current_line = []  # 当前行正在累积的片段
+            current_line_start_time = None  # 当前行的开始时间
+            max_display_lines = 15  # 屏幕最多显示多少行
             
-            print("\n" + "=" * 80)
-            print("📺 实时字幕开始（播放视频即可看到字幕）")
-            print("=" * 80 + "\n")
+            # 初始化显示
+            self._clear_screen()
+            print("=" * 80)
+            print("📺 实时字幕（实时累积显示）")
+            print("=" * 80)
+            print()
             
             while self.is_processing:
                 try:
@@ -330,13 +337,39 @@ class RealtimeAudioStreaming:
                     
                     elapsed = time.perf_counter() - start_time
                     
-                    # 打印字幕
+                    # 处理识别结果
                     if res and len(res) > 0:
                         text = res[0].get("text", "").strip()
                         if text:
-                            # 字幕样式输出
                             timestamp = time.strftime("%H:%M:%S")
-                            print(f"[{timestamp}] 🎬 {text}")
+                            
+                            # 如果是新行的开始，记录时间
+                            if not current_line:
+                                current_line_start_time = timestamp
+                            
+                            # 累积到当前行
+                            current_line.append(text)
+                            current_text = "".join(current_line)
+                            
+                            # 判断是否需要换行（达到一定长度或遇到标点）
+                            should_newline = (
+                                len(current_text) >= 40 or  # 超过 40 字换行
+                                any(p in text for p in ['。', '！', '？'])  # 遇到句号换行
+                            )
+                            
+                            if should_newline:
+                                # 保存完整的句子
+                                all_sentences.append((current_line_start_time, current_text))
+                                current_line = []
+                                current_line_start_time = None
+                            
+                            # 刷新显示（包括当前正在累积的行）
+                            self._refresh_display_with_current(
+                                all_sentences, 
+                                current_line, 
+                                current_line_start_time,
+                                max_display_lines
+                            )
                             
                             # 性能信息（调试用）
                             if chunk_index % 10 == 0:
@@ -350,10 +383,70 @@ class RealtimeAudioStreaming:
                 except Exception as e:
                     logger.error(f"❌ 处理块 {chunk_index} 时出错: {e}")
                     continue
+            
+            # 处理结束，保存剩余的行
+            if current_line:
+                current_text = "".join(current_line)
+                all_sentences.append((current_line_start_time, current_text))
+            
+            # 显示完整内容
+            if len(all_sentences) > 0:
+                self._clear_screen()
+                print("\n" + "=" * 80)
+                print("📝 转写完成！完整内容：")
+                print("=" * 80)
+                print()
+                for timestamp, text in all_sentences:
+                    print(f"[{timestamp}] {text}")
+                print()
+                print("=" * 80)
+                print(f"总计：{len(all_sentences)} 句，{sum(len(t[1]) for t in all_sentences)} 字")
+                print("=" * 80 + "\n")
         
         except Exception as e:
             logger.error(f"❌ 音频处理失败: {e}")
             self.is_processing = False
+    
+    def _clear_screen(self):
+        """清空屏幕"""
+        os.system('cls' if os.name == 'nt' else 'clear')
+    
+    def _refresh_display_with_current(self, all_sentences, current_line, current_time, max_lines):
+        """刷新显示所有内容（包括当前正在累积的行）"""
+        # 清空屏幕
+        self._clear_screen()
+        
+        # 显示标题
+        total_chars = sum(len(t[1]) for t in all_sentences)
+        if current_line:
+            total_chars += len("".join(current_line))
+        
+        print("=" * 80)
+        print("📺 实时字幕")
+        print("=" * 80)
+        print(f"已识别：{len(all_sentences)} 句，{total_chars} 字")
+        print("=" * 80)
+        print()
+        
+        # 显示最近的完整句子
+        display_sentences = all_sentences[-max_lines:] if len(all_sentences) > max_lines else all_sentences
+        
+        if len(all_sentences) > max_lines:
+            print(f"... (前面还有 {len(all_sentences) - max_lines} 句)")
+            print()
+        
+        for timestamp, text in display_sentences:
+            print(f"[{timestamp}] {text}")
+        
+        # 显示当前正在累积的行（用不同颜色或标记）
+        if current_line:
+            current_text = "".join(current_line)
+            print(f"[{current_time}] {current_text} ...")  # 加 ... 表示还在继续
+        
+        print()
+        print("-" * 80)
+        print("提示：按 Ctrl+C 停止录音")
+        print("-" * 80)
     
     def start(self, duration: Optional[float] = None):
         """
