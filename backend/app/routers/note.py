@@ -47,11 +47,6 @@ def get_available_transcribers():
             "description": "流式转写，中文优化，低延迟（推荐）"
         },
         {
-            "value": TranscriberType.FUNASR_NANO.value,
-            "label": "Fun-ASR-Nano",
-            "description": "轻量级，支持31种语言"
-        },
-        {
             "value": TranscriberType.DEEPGRAM.value,
             "label": "Deepgram",
             "description": "云端API，需要API Key"

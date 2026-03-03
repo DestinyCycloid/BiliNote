@@ -9,7 +9,6 @@ import threading
 # from app.transcriber.bcut import BcutTranscriber
 # from app.transcriber.kuaishou import KuaishouTranscriber
 # from app.transcriber.deepgram import DeepgramTranscriber
-# from app.transcriber.funasr_nano import FunASRNanoTranscriber
 # from app.transcriber.paraformer_streaming import ParaformerStreamingTranscriber
 from app.utils.logger import get_logger
 
@@ -22,7 +21,6 @@ class TranscriberType(str, Enum):
     KUAISHOU = "kuaishou"
     GROQ = "groq"
     DEEPGRAM = "deepgram"
-    FUNASR_NANO = "funasr-nano"
     PARAFORMER_STREAMING = "paraformer-streaming"
 
 # 仅在 Apple 平台启用 MLX Whisper
@@ -45,7 +43,6 @@ _transcribers = {
     TranscriberType.KUAISHOU: None,
     TranscriberType.GROQ: None,
     TranscriberType.DEEPGRAM: None,
-    TranscriberType.FUNASR_NANO: None,
     TranscriberType.PARAFORMER_STREAMING: None,
 }
 
@@ -96,22 +93,6 @@ def get_deepgram_transcriber():
     """获取 Deepgram Whisper 转写器实例"""
     from app.transcriber.deepgram import DeepgramTranscriber
     return _init_transcriber(TranscriberType.DEEPGRAM, DeepgramTranscriber)
-
-def get_funasr_nano_transcriber(model_size="2512", device="cuda"):
-    """
-    获取 Fun-ASR-Nano 转写器实例
-    
-    Args:
-        model_size: 模型版本，默认 "2512" (2025年12月版本)
-        device: 设备类型，"cuda" 或 "cpu"
-    """
-    from app.transcriber.funasr_nano import FunASRNanoTranscriber
-    return _init_transcriber(
-        TranscriberType.FUNASR_NANO,
-        FunASRNanoTranscriber,
-        model_size=model_size,
-        device=device
-    )
 
 def get_paraformer_streaming_transcriber(use_vad=False, use_punc=False, device="cuda"):
     """
@@ -174,10 +155,6 @@ def get_transcriber(transcriber_type="fast-whisper", model_size="base", device="
     
     elif transcriber_enum == TranscriberType.DEEPGRAM:
         return get_deepgram_transcriber()
-    
-    elif transcriber_enum == TranscriberType.FUNASR_NANO:
-        funasr_model_size = os.environ.get("FUNASR_NANO_MODEL_SIZE", "2512")
-        return get_funasr_nano_transcriber(funasr_model_size, device=device)
     
     elif transcriber_enum == TranscriberType.PARAFORMER_STREAMING:
         use_vad = os.environ.get("PARAFORMER_USE_VAD", "false").lower() == "true"

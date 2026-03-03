@@ -252,7 +252,6 @@ const Transcriber = () => {
               <ul className="space-y-1 text-xs">
                 <li>• <strong>Faster Whisper</strong>: 通用选择，支持多语言</li>
                 <li>• <strong>Paraformer-streaming</strong>: 中文优化，支持流式转写（推荐）</li>
-                <li>• <strong>Fun-ASR-Nano</strong>: 轻量级，支持31种语言</li>
                 <li>• <strong>Deepgram/Groq</strong>: 云端API，需要配置API Key</li>
                 <li>• <strong>必剪/快手</strong>: 官方转写服务</li>
               </ul>
