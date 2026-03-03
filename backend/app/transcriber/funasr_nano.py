@@ -72,43 +72,43 @@ class FunASRNanoTranscriber(Transcriber):
                     from funasr import AutoModel
                     
                     logger.info(f"正在加载 Fun-ASR-Nano-{self.model_size} 模型...")
-            
-            # 优先使用本地已下载的模型
-            local_model_dir = f"./models/FunAudioLLM/Fun-ASR-Nano-{self.model_size}"
-            
-            if os.path.exists(local_model_dir):
-                model_dir = local_model_dir
-                logger.info(f"使用本地模型: {model_dir}")
-                # remote_code 是相对于当前工作目录的路径
-                # 当前工作目录是 backend/，所以路径是相对于 backend/
-                remote_code_path = f"./models/FunAudioLLM/Fun-ASR-Nano-{self.model_size}/model.py"
-            else:
-                # 如果本地不存在，从 ModelScope 下载
-                model_dir = f"FunAudioLLM/Fun-ASR-Nano-{self.model_size}"
-                logger.info(f"本地模型不存在，从 ModelScope 下载: {model_dir}")
-                remote_code_path = "./model.py"  # ModelScope 会自动下载到模型目录
-            
-            try:
-                # Fun-ASR-Nano 需要使用 trust_remote_code=True 和 remote_code 参数
-                # 参考 demo1.py 的用法
-                # 注意：不使用 VAD，因为 funasr 1.3.1 的 VAD 有 bug (KeyError: 0)
-                self.model = AutoModel(
-                    model=model_dir,
-                    trust_remote_code=True,
-                    remote_code=remote_code_path,  # 相对于当前工作目录的路径
-                    device=self.device,
-                    hub="ms",  # 使用 ModelScope
-                    disable_update=True,  # 禁用版本检查，加快加载速度
-                )
-                logger.info(f"✅ Fun-ASR-Nano 模型加载完成（无 VAD），设备: {self.device}")
-            except Exception as e:
-                logger.error(f"加载失败: {e}")
-                import traceback
-                logger.error(traceback.format_exc())
-                raise Exception(
-                    f"Fun-ASR-Nano 模型加载失败: {e}\n"
-                    f"请确保模型已下载或 ModelScope 可访问"
-                )
+                    
+                    # 优先使用本地已下载的模型
+                    local_model_dir = f"./models/FunAudioLLM/Fun-ASR-Nano-{self.model_size}"
+                    
+                    if os.path.exists(local_model_dir):
+                        model_dir = local_model_dir
+                        logger.info(f"使用本地模型: {model_dir}")
+                        # remote_code 是相对于当前工作目录的路径
+                        # 当前工作目录是 backend/，所以路径是相对于 backend/
+                        remote_code_path = f"./models/FunAudioLLM/Fun-ASR-Nano-{self.model_size}/model.py"
+                    else:
+                        # 如果本地不存在，从 ModelScope 下载
+                        model_dir = f"FunAudioLLM/Fun-ASR-Nano-{self.model_size}"
+                        logger.info(f"本地模型不存在，从 ModelScope 下载: {model_dir}")
+                        remote_code_path = "./model.py"  # ModelScope 会自动下载到模型目录
+                    
+                    try:
+                        # Fun-ASR-Nano 需要使用 trust_remote_code=True 和 remote_code 参数
+                        # 参考 demo1.py 的用法
+                        # 注意：不使用 VAD，因为 funasr 1.3.1 的 VAD 有 bug (KeyError: 0)
+                        self.model = AutoModel(
+                            model=model_dir,
+                            trust_remote_code=True,
+                            remote_code=remote_code_path,  # 相对于当前工作目录的路径
+                            device=self.device,
+                            hub="ms",  # 使用 ModelScope
+                            disable_update=True,  # 禁用版本检查，加快加载速度
+                        )
+                        logger.info(f"✅ Fun-ASR-Nano 模型加载完成（无 VAD），设备: {self.device}")
+                    except Exception as e:
+                        logger.error(f"加载失败: {e}")
+                        import traceback
+                        logger.error(traceback.format_exc())
+                        raise Exception(
+                            f"Fun-ASR-Nano 模型加载失败: {e}\n"
+                            f"请确保模型已下载或 ModelScope 可访问"
+                        )
 
     @timeit
     def transcript(self, file_path: str) -> TranscriptResult:

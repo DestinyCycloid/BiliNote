@@ -91,48 +91,48 @@ class ParaformerStreamingTranscriber(Transcriber):
                     from funasr import AutoModel
                     
                     logger.info("正在加载 Paraformer-streaming 模型...")
-            
-            # 优先使用本地模型
-            local_model_dir = "./models/iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online"
-            
-            if os.path.exists(local_model_dir):
-                model_path = local_model_dir
-                logger.info(f"使用本地模型: {model_path}")
-            else:
-                model_path = "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online"
-                logger.info(f"本地模型不存在，从 ModelScope 下载: {model_path}")
-            
-            # 构建模型参数
-            model_kwargs = {
-                "model": model_path,
-                "device": self.device,
-                "disable_update": True,
-            }
-            
-            # 添加 VAD
-            if self.use_vad:
-                vad_model_dir = "./models/iic/speech_fsmn_vad_zh-cn-16k-common-pytorch"
-                if os.path.exists(vad_model_dir):
-                    model_kwargs["vad_model"] = vad_model_dir
-                else:
-                    model_kwargs["vad_model"] = "fsmn-vad"
-                model_kwargs["vad_kwargs"] = {"max_single_segment_time": 30000}
-                logger.warning("⚠️ VAD 在流式模式下可能不工作（funasr 1.3.1 已知问题）")
-                logger.info("提示：VAD 会在模型加载时启用，但在流式处理时会被跳过")
-            
-            # 添加标点恢复
-            if self.use_punc:
-                punc_model_dir = "./models/iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch"
-                if os.path.exists(punc_model_dir):
-                    model_kwargs["punc_model"] = punc_model_dir
-                else:
-                    model_kwargs["punc_model"] = "ct-punc"
-                logger.info("启用标点恢复")
-            
-            self.model = AutoModel(**model_kwargs)
-            
-            logger.info(f"✅ Paraformer-streaming 模型加载完成，设备: {self.device}")
-            logger.info(f"块大小配置: {self.chunk_size} = {self.chunk_size[1]*60}ms ≈ {self.chunk_size[1]*60/1000:.1f}秒/块")
+                    
+                    # 优先使用本地模型
+                    local_model_dir = "./models/iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online"
+                    
+                    if os.path.exists(local_model_dir):
+                        model_path = local_model_dir
+                        logger.info(f"使用本地模型: {model_path}")
+                    else:
+                        model_path = "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online"
+                        logger.info(f"本地模型不存在，从 ModelScope 下载: {model_path}")
+                    
+                    # 构建模型参数
+                    model_kwargs = {
+                        "model": model_path,
+                        "device": self.device,
+                        "disable_update": True,
+                    }
+                    
+                    # 添加 VAD
+                    if self.use_vad:
+                        vad_model_dir = "./models/iic/speech_fsmn_vad_zh-cn-16k-common-pytorch"
+                        if os.path.exists(vad_model_dir):
+                            model_kwargs["vad_model"] = vad_model_dir
+                        else:
+                            model_kwargs["vad_model"] = "fsmn-vad"
+                        model_kwargs["vad_kwargs"] = {"max_single_segment_time": 30000}
+                        logger.warning("⚠️ VAD 在流式模式下可能不工作（funasr 1.3.1 已知问题）")
+                        logger.info("提示：VAD 会在模型加载时启用，但在流式处理时会被跳过")
+                    
+                    # 添加标点恢复
+                    if self.use_punc:
+                        punc_model_dir = "./models/iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch"
+                        if os.path.exists(punc_model_dir):
+                            model_kwargs["punc_model"] = punc_model_dir
+                        else:
+                            model_kwargs["punc_model"] = "ct-punc"
+                        logger.info("启用标点恢复")
+                    
+                    self.model = AutoModel(**model_kwargs)
+                    
+                    logger.info(f"✅ Paraformer-streaming 模型加载完成，设备: {self.device}")
+                    logger.info(f"块大小配置: {self.chunk_size} = {self.chunk_size[1]*60}ms ≈ {self.chunk_size[1]*60/1000:.1f}秒/块")
 
     @timeit
     def transcript(self, file_path: str) -> TranscriptResult:
