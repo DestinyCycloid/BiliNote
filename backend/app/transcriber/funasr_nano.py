@@ -1,6 +1,7 @@
 import os
 import sys
 from typing import Optional
+import threading
 
 from app.decorators.timeit import timeit
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
@@ -49,6 +50,7 @@ class FunASRNanoTranscriber(Transcriber):
         
         self.model = None
         self.model_dir = None
+        self._model_lock = threading.Lock()  # 线程锁，保护模型加载
         
         # 检查必要的依赖
         try:
@@ -61,11 +63,15 @@ class FunASRNanoTranscriber(Transcriber):
             )
 
     def _load_model(self):
-        """延迟加载模型"""
+        """延迟加载模型（线程安全）"""
+        # 双重检查锁定模式
         if self.model is None:
-            from funasr import AutoModel
-            
-            logger.info(f"正在加载 Fun-ASR-Nano-{self.model_size} 模型...")
+            with self._model_lock:
+                # 再次检查，避免多个线程重复加载
+                if self.model is None:
+                    from funasr import AutoModel
+                    
+                    logger.info(f"正在加载 Fun-ASR-Nano-{self.model_size} 模型...")
             
             # 优先使用本地已下载的模型
             local_model_dir = f"./models/FunAudioLLM/Fun-ASR-Nano-{self.model_size}"

@@ -84,43 +84,8 @@ class SimpleThreadPipeline:
         :param transcriber_type: 转写器类型
         :return: 推荐的并发数
         """
-        # 支持多线程的本地模型（已验证线程安全）
-        thread_safe_models = ["fast-whisper"]  # CTranslate2 官方支持多线程
-        
-        # 需要保守处理的本地模型（未验证线程安全）
-        conservative_models = ["mlx-whisper", "funasr-nano", "paraformer-streaming"]
-        
-        # API 服务（网络 IO，可以高并发）
-        api_services = ["bcut", "kuaishou", "groq", "deepgram"]
-        
-        if transcriber_type in thread_safe_models:
-            # faster-whisper: CTranslate2 官方支持多线程，可以适度并发
-            # 但仍需考虑 GPU 内存限制
-            if video_count <= 5:
-                return 2
-            elif video_count <= 10:
-                return 3
-            elif video_count <= 20:
-                return 4
-            else:
-                return 5
-        
-        elif transcriber_type in conservative_models:
-            # 未验证线程安全的本地模型：保守策略
-            logger.warning(
-                f"转写器 {transcriber_type} 的线程安全性未验证，"
-                f"使用保守并发策略（并发数=1）"
-            )
-            return 1
-        
-        elif transcriber_type in api_services:
-            # API 服务：固定4个并发，避免触发 API 限流
-            return 4
-        
-        else:
-            # 未知类型，保守处理
-            logger.warning(f"未知转写器类型 {transcriber_type}，使用保守并发策略")
-            return 2
+        # 统一使用 4 个并发，不再区分模型类型
+        return 4
     
     def process_playlist(
         self,

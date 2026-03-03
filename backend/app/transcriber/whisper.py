@@ -3,7 +3,7 @@ from faster_whisper import WhisperModel
 from app.decorators.timeit import timeit
 from app.models.transcriber_model import TranscriptSegment, TranscriptResult
 from app.transcriber.base import Transcriber
-from app.utils.env_checker import is_cuda_available, is_torch_installed
+# 延迟导入 env_checker，避免在模块加载时就初始化 torch
 from app.utils.logger import get_logger
 from app.utils.path_helper import get_model_dir
 
@@ -78,6 +78,9 @@ class WhisperTranscriber(Transcriber):
     @staticmethod
     def is_cuda() -> bool:
         try:
+            # 延迟导入，避免在模块加载时初始化 torch
+            from app.utils.env_checker import is_cuda_available, is_torch_installed
+            
             if is_cuda_available():
                 print(" CUDA 可用，使用 GPU")
                 return True

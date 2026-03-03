@@ -2,6 +2,7 @@ import os
 import time
 import numpy as np
 from typing import Optional, List
+import threading
 
 from app.decorators.timeit import timeit
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
@@ -50,8 +51,8 @@ class ParaformerStreamingTranscriber(Transcriber):
             use_punc: 是否使用标点恢复 - 流式模式下不工作
             device: 运行设备
         """
-        # 默认使用 1 秒块大小（适合录制文件）
-        self.chunk_size = chunk_size or [0, 17, 8]  # 1020ms ≈ 1秒
+        # 默认使用 2 秒块大小（适合离线文件处理，更快）
+        self.chunk_size = chunk_size or [0, 34, 17]  # 2040ms ≈ 2秒
         self.encoder_chunk_look_back = encoder_chunk_look_back
         self.decoder_chunk_look_back = decoder_chunk_look_back
         self.use_vad = use_vad
@@ -67,6 +68,7 @@ class ParaformerStreamingTranscriber(Transcriber):
             self.device = device
         
         self.model = None
+        self._model_lock = threading.Lock()  # 线程锁，保护模型加载
         
         # 检查依赖
         try:
@@ -80,11 +82,15 @@ class ParaformerStreamingTranscriber(Transcriber):
             )
 
     def _load_model(self):
-        """延迟加载模型"""
+        """延迟加载模型（线程安全）"""
+        # 双重检查锁定模式
         if self.model is None:
-            from funasr import AutoModel
-            
-            logger.info("正在加载 Paraformer-streaming 模型...")
+            with self._model_lock:
+                # 再次检查，避免多个线程重复加载
+                if self.model is None:
+                    from funasr import AutoModel
+                    
+                    logger.info("正在加载 Paraformer-streaming 模型...")
             
             # 优先使用本地模型
             local_model_dir = "./models/iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online"

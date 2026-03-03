@@ -1,14 +1,16 @@
 import os
 import platform
 from enum import Enum
+import threading
 
-from app.transcriber.groq import GroqTranscriber
-from app.transcriber.whisper import WhisperTranscriber
-from app.transcriber.bcut import BcutTranscriber
-from app.transcriber.kuaishou import KuaishouTranscriber
-from app.transcriber.deepgram import DeepgramTranscriber
-from app.transcriber.funasr_nano import FunASRNanoTranscriber
-from app.transcriber.paraformer_streaming import ParaformerStreamingTranscriber
+# 不再在模块级别导入所有 transcriber，改为按需导入
+# from app.transcriber.groq import GroqTranscriber
+# from app.transcriber.whisper import WhisperTranscriber
+# from app.transcriber.bcut import BcutTranscriber
+# from app.transcriber.kuaishou import KuaishouTranscriber
+# from app.transcriber.deepgram import DeepgramTranscriber
+# from app.transcriber.funasr_nano import FunASRNanoTranscriber
+# from app.transcriber.paraformer_streaming import ParaformerStreamingTranscriber
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -47,29 +49,41 @@ _transcribers = {
     TranscriberType.PARAFORMER_STREAMING: None,
 }
 
+# 线程锁，保护单例创建
+_transcriber_lock = threading.Lock()
+
 # 公共实例初始化函数
 def _init_transcriber(key: TranscriberType, cls, *args, **kwargs):
+    # 双重检查锁定模式
     if _transcribers[key] is None:
-        logger.info(f'创建 {cls.__name__} 实例: {key}')
-        try:
-            _transcribers[key] = cls(*args, **kwargs)
-            logger.info(f'{cls.__name__} 创建成功')
-        except Exception as e:
-            logger.error(f"{cls.__name__} 创建失败: {e}")
-            raise
+        with _transcriber_lock:
+            # 再次检查，避免多个线程重复创建
+            if _transcribers[key] is None:
+                logger.info(f'创建 {cls.__name__} 实例: {key}')
+                try:
+                    _transcribers[key] = cls(*args, **kwargs)
+                    logger.info(f'{cls.__name__} 创建成功')
+                except Exception as e:
+                    logger.error(f"{cls.__name__} 创建失败: {e}")
+                    raise
     return _transcribers[key]
 
 # 各类型获取方法
 def get_groq_transcriber():
+    from app.transcriber.groq import GroqTranscriber
     return _init_transcriber(TranscriberType.GROQ, GroqTranscriber)
 
 def get_whisper_transcriber(model_size="base", device="cuda"):
+    # 延迟导入，只在真正使用 whisper 时才导入
+    from app.transcriber.whisper import WhisperTranscriber
     return _init_transcriber(TranscriberType.FAST_WHISPER, WhisperTranscriber, model_size=model_size, device=device)
 
 def get_bcut_transcriber():
+    from app.transcriber.bcut import BcutTranscriber
     return _init_transcriber(TranscriberType.BCUT, BcutTranscriber)
 
 def get_kuaishou_transcriber():
+    from app.transcriber.kuaishou import KuaishouTranscriber
     return _init_transcriber(TranscriberType.KUAISHOU, KuaishouTranscriber)
 
 def get_mlx_whisper_transcriber(model_size="base"):
@@ -80,6 +94,7 @@ def get_mlx_whisper_transcriber(model_size="base"):
 
 def get_deepgram_transcriber():
     """获取 Deepgram Whisper 转写器实例"""
+    from app.transcriber.deepgram import DeepgramTranscriber
     return _init_transcriber(TranscriberType.DEEPGRAM, DeepgramTranscriber)
 
 def get_funasr_nano_transcriber(model_size="2512", device="cuda"):
@@ -90,6 +105,7 @@ def get_funasr_nano_transcriber(model_size="2512", device="cuda"):
         model_size: 模型版本，默认 "2512" (2025年12月版本)
         device: 设备类型，"cuda" 或 "cpu"
     """
+    from app.transcriber.funasr_nano import FunASRNanoTranscriber
     return _init_transcriber(
         TranscriberType.FUNASR_NANO,
         FunASRNanoTranscriber,
@@ -106,6 +122,7 @@ def get_paraformer_streaming_transcriber(use_vad=False, use_punc=False, device="
         use_punc: 是否使用标点恢复
         device: 设备类型，"cuda" 或 "cpu"
     """
+    from app.transcriber.paraformer_streaming import ParaformerStreamingTranscriber
     return _init_transcriber(
         TranscriberType.PARAFORMER_STREAMING,
         ParaformerStreamingTranscriber,

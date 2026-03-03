@@ -127,7 +127,12 @@ yarl==1.19.0
 yt-dlp==2025.3.31
 zopfli==0.2.3.post1
 
+# PyTorch with CUDA support (必须在其他依赖之前安装)
+# 注意：请使用以下命令安装 PyTorch CUDA 版本：
+# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+torch>=2.0.0
+torchaudio>=2.0.0
+
 # Qwen3-ASR 语音识别 (可选，使用时取消注释)
 # qwen-asr>=0.1.0
-# torch>=2.0.0
 # flash-attn>=2.0.0  # 可选，加速推理
