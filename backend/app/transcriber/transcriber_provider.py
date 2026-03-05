@@ -22,6 +22,7 @@ class TranscriberType(str, Enum):
     GROQ = "groq"
     DEEPGRAM = "deepgram"
     PARAFORMER_STREAMING = "paraformer-streaming"
+    QWEN3_ASR = "qwen3-asr"
 
 # 仅在 Apple 平台启用 MLX Whisper
 MLX_WHISPER_AVAILABLE = False
@@ -44,6 +45,7 @@ _transcribers = {
     TranscriberType.GROQ: None,
     TranscriberType.DEEPGRAM: None,
     TranscriberType.PARAFORMER_STREAMING: None,
+    TranscriberType.QWEN3_ASR: None,
 }
 
 # 线程锁，保护单例创建
@@ -112,6 +114,33 @@ def get_paraformer_streaming_transcriber(use_vad=False, use_punc=False, device="
         device=device
     )
 
+def get_qwen3_asr_transcriber(
+    model_name="Qwen/Qwen3-ASR-1.7B",
+    backend="vllm",
+    use_forced_aligner=False,
+    device="cuda"
+):
+    """
+    获取 Qwen3-ASR 转写器实例
+    
+    Args:
+        model_name: 模型名称
+            - "Qwen/Qwen3-ASR-1.7B" (推荐，最高准确率)
+            - "Qwen/Qwen3-ASR-0.6B" (轻量级，高吞吐)
+        backend: 后端类型，"vllm" 或 "transformers"
+        use_forced_aligner: 是否使用强制对齐器生成时间戳
+        device: 设备类型，"cuda" 或 "cpu"
+    """
+    from app.transcriber.qwen3_asr import Qwen3ASRTranscriber
+    return _init_transcriber(
+        TranscriberType.QWEN3_ASR,
+        Qwen3ASRTranscriber,
+        model_name=model_name,
+        backend=backend,
+        use_forced_aligner=use_forced_aligner,
+        device=device
+    )
+
 # 通用入口
 def get_transcriber(transcriber_type="fast-whisper", model_size="base", device="cuda"):
     """
@@ -160,6 +189,17 @@ def get_transcriber(transcriber_type="fast-whisper", model_size="base", device="
         use_vad = os.environ.get("PARAFORMER_USE_VAD", "false").lower() == "true"
         use_punc = os.environ.get("PARAFORMER_USE_PUNC", "false").lower() == "true"
         return get_paraformer_streaming_transcriber(use_vad=use_vad, use_punc=use_punc, device=device)
+    
+    elif transcriber_enum == TranscriberType.QWEN3_ASR:
+        model_name = os.environ.get("QWEN3_ASR_MODEL", "Qwen/Qwen3-ASR-1.7B")
+        backend = os.environ.get("QWEN3_ASR_BACKEND", "vllm")
+        use_forced_aligner = os.environ.get("QWEN3_ASR_USE_ALIGNER", "false").lower() == "true"
+        return get_qwen3_asr_transcriber(
+            model_name=model_name,
+            backend=backend,
+            use_forced_aligner=use_forced_aligner,
+            device=device
+        )
 
     # fallback
     logger.warning(f'未识别转录器类型 "{transcriber_type}"，使用 fast-whisper 作为默认')
