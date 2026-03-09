@@ -272,27 +272,72 @@ def generate_note(data: VideoRequest, background_tasks: BackgroundTasks):
 
 @router.get("/task_status/{task_id}")
 def get_task_status(task_id: str):
+    """
+    获取任务状态，优先从 Redis 读取，未命中时读取文件
+    """
+    from app.utils.redis_client import RedisManager
+    
     status_path = os.path.join(NOTE_OUTPUT_DIR, f"{task_id}.status.json")
     result_path = os.path.join(NOTE_OUTPUT_DIR, f"{task_id}.json")
-
-    # 优先读状态文件
+    
+    # 优先从 Redis 读取状态
+    try:
+        redis_manager = RedisManager(db=0)
+        if redis_manager.available:
+            redis_key = f"task:{task_id}"
+            status_data = redis_manager.hgetall(redis_key)
+            
+            if status_data:
+                logger.debug(f"✅ 从 Redis 读取任务状态: {task_id}")
+                status = status_data.get("status")
+                message = status_data.get("message", "")
+                
+                # 成功状态，读取结果
+                if status == TaskStatus.SUCCESS.value:
+                    if os.path.exists(result_path):
+                        with open(result_path, "r", encoding="utf-8") as rf:
+                            result_content = json.load(rf)
+                        return R.success({
+                            "status": status,
+                            "result": result_content,
+                            "message": message,
+                            "task_id": task_id
+                        })
+                    else:
+                        return R.success({
+                            "status": TaskStatus.PENDING.value,
+                            "message": "任务完成，但结果文件未找到",
+                            "task_id": task_id
+                        })
+                
+                # 失败状态
+                if status == TaskStatus.FAILED.value:
+                    return R.error(message or "任务失败", code=500)
+                
+                # 处理中状态
+                return R.success({
+                    "status": status,
+                    "message": message,
+                    "task_id": task_id
+                })
+    except Exception as e:
+        logger.warning(f"从 Redis 读取状态失败，降级到文件: {e}")
+    
+    # Redis 未命中或失败，降级到文件系统
     if os.path.exists(status_path):
         try:
             with open(status_path, "r", encoding="utf-8") as f:
                 content = f.read().strip()
                 if not content:
-                    # 文件为空，返回处理中状态
                     return {"code": 0, "data": {"status": TaskStatus.TRANSCRIBING.value, "message": "处理中..."}}
                 status_content = json.loads(content)
         except json.JSONDecodeError:
-            # JSON 解析失败，返回处理中状态
             return {"code": 0, "data": {"status": TaskStatus.TRANSCRIBING.value, "message": "处理中..."}}
 
         status = status_content.get("status")
         message = status_content.get("message", "")
 
         if status == TaskStatus.SUCCESS.value:
-            # 成功状态的话，继续读取最终笔记内容
             if os.path.exists(result_path):
                 with open(result_path, "r", encoding="utf-8") as rf:
                     result_content = json.load(rf)
@@ -303,7 +348,6 @@ def get_task_status(task_id: str):
                     "task_id": task_id
                 })
             else:
-                # 理论上不会出现，保险处理
                 return R.success({
                     "status": TaskStatus.PENDING.value,
                     "message": "任务完成，但结果文件未找到",
@@ -313,7 +357,6 @@ def get_task_status(task_id: str):
         if status == TaskStatus.FAILED.value:
             return R.error(message or "任务失败", code=500)
 
-        # 处理中状态
         return R.success({
             "status": status,
             "message": message,
@@ -336,6 +379,7 @@ def get_task_status(task_id: str):
         "message": "任务排队中",
         "task_id": task_id
     })
+
 
 
 @router.get("/image_proxy")

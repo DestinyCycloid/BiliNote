@@ -213,7 +213,18 @@ class NoteGenerator:
             self._update_status(task_id, TaskStatus.SAVING)
             self._save_metadata(video_id=audio_meta.video_id, platform=platform, task_id=task_id)
 
-            # 6. 完成
+            # 6. 缓存 Markdown 到 Redis
+            from app.utils.redis_client import RedisManager
+            redis_manager = RedisManager(db=1)
+            if redis_manager.available:
+                try:
+                    markdown_key = f"markdown:{task_id}"
+                    redis_manager.set(markdown_key, markdown, ttl=2592000)  # 30天过期
+                    logger.info(f"✅ Markdown 已缓存到 Redis (TTL: 30天)")
+                except Exception as e:
+                    logger.warning(f"缓存 Markdown 到 Redis 失败: {e}")
+
+            # 7. 完成
             self._update_status(task_id, TaskStatus.SUCCESS)
             logger.info(f"笔记生成成功 (task_id={task_id})")
             return NoteResult(markdown=markdown, transcript=transcript, audio_meta=audio_meta)
@@ -624,7 +635,7 @@ class NoteGenerator:
 
     def _update_status(self, task_id: Optional[str], status: Union[str, TaskStatus], message: Optional[str] = None):
         """
-        创建或更新 {task_id}.status.json，记录当前任务状态
+        创建或更新任务状态，优先写入 Redis，失败时降级到文件系统
 
         :param task_id: 任务唯一 ID
         :param status: TaskStatus 枚举或自定义状态字符串
@@ -633,33 +644,51 @@ class NoteGenerator:
         if not task_id:
             return
 
-        NOTE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-        status_file = NOTE_OUTPUT_DIR / f"{task_id}.status.json"
-        print(f"写入状态文件: {status_file} 当前状态: {status}")
-        data = {"status": status.value if isinstance(status, TaskStatus) else status}
+        import time
+        from app.utils.redis_client import RedisManager
+        
+        # 准备状态数据
+        status_value = status.value if isinstance(status, TaskStatus) else status
+        data = {
+            "status": status_value,
+            "updated_at": str(time.time())
+        }
         if message:
             data["message"] = message
-
+        
+        # 优先尝试写入 Redis
+        redis_success = False
         try:
-            # First create a temporary file
+            redis_manager = RedisManager(db=0)  # 使用 DB0 存储任务状态
+            if redis_manager.available:
+                redis_key = f"task:{task_id}"
+                redis_success = redis_manager.hset(redis_key, data, ttl=86400)  # 24小时过期
+                if redis_success:
+                    logger.debug(f"✅ 任务状态已写入 Redis: {task_id} -> {status_value}")
+        except Exception as e:
+            logger.warning(f"Redis 写入失败，降级到文件系统: {e}")
+        
+        # 降级到文件系统（无论 Redis 是否成功，都写入文件作为备份）
+        try:
+            NOTE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+            status_file = NOTE_OUTPUT_DIR / f"{task_id}.status.json"
+            
+            # 使用临时文件保证原子性
             temp_file = status_file.with_suffix('.tmp')
-
-            # Write to temporary file
             with temp_file.open('w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
-
-            # Atomic rename operation
             temp_file.replace(status_file)
-
-            print(f"状态文件写入成功: {status_file}")
+            
+            if not redis_success:
+                logger.debug(f"📁 任务状态已写入文件: {status_file}")
         except Exception as e:
-            logger.error(f"写入状态文件失败 (task_id={task_id})：{e}")
-            # Try to write error to file directly as fallback
+            logger.error(f"❌ 写入状态文件失败 (task_id={task_id}): {e}")
+            # 最后的降级方案：直接写入
             try:
                 with status_file.open('w', encoding='utf-8') as f:
                     f.write(f"Error writing status: {str(e)}")
             except:
-                logger.error(f"写入错误  {e}")
+                logger.error(f"❌ 所有写入方式均失败")
 
     def _handle_exception(self, task_id, exc):
         logger.error(f"任务异常 (task_id={task_id})", exc_info=True)
@@ -731,12 +760,41 @@ class NoteGenerator:
                     logger.info("未指定 grid_size，跳过缩略图生成")
             except Exception as exc:
                 logger.error(f"视频下载失败：{exc}")
-
                 self._handle_exception(task_id, exc)
                 raise
-        # 已有缓存，尝试加载
+        
+        from app.utils.redis_client import RedisManager
+        
+        # 生成 Redis 缓存键
+        cache_key = f"audio:{audio_cache_file.stem}"
+        redis_manager = RedisManager(db=1)  # 使用 DB1 存储缓存
+        
+        # 优先从 Redis 读取缓存
+        if redis_manager.available:
+            try:
+                cached_data = redis_manager.get(cache_key)
+                if cached_data:
+                    logger.info(f"✅ 从 Redis 读取音频缓存: {cache_key}")
+                    data = json.loads(cached_data)
+                    audio_result = AudioDownloadResult(**data)
+                    
+                    # 校验音频文件是否存在且有效
+                    if audio_result.file_path and os.path.exists(audio_result.file_path):
+                        from app.utils.audio_validator import validate_audio_file
+                        is_valid, error_msg = validate_audio_file(audio_result.file_path)
+                        if is_valid:
+                            logger.info(f"音频文件有效，使用缓存: {audio_result.file_path}")
+                            return audio_result
+                        else:
+                            logger.warning(f"音频文件无效: {error_msg}，重新下载")
+                    else:
+                        logger.warning(f"音频文件不存在: {audio_result.file_path}，重新下载")
+            except Exception as e:
+                logger.warning(f"从 Redis 读取音频缓存失败: {e}")
+        
+        # Redis 未命中，尝试从文件读取
         if audio_cache_file.exists():
-            logger.info(f"检测到音频缓存 ({audio_cache_file})，直接读取")
+            logger.info(f"📁 从文件读取音频缓存: {audio_cache_file}")
             try:
                 data = json.loads(audio_cache_file.read_text(encoding="utf-8"))
                 audio_result = AudioDownloadResult(**data)
@@ -747,6 +805,15 @@ class NoteGenerator:
                     is_valid, error_msg = validate_audio_file(audio_result.file_path)
                     if is_valid:
                         logger.info(f"音频文件有效，使用缓存: {audio_result.file_path}")
+                        
+                        # 回写到 Redis
+                        if redis_manager.available:
+                            try:
+                                redis_manager.set(cache_key, json.dumps(data, ensure_ascii=False), ttl=604800)  # 7天
+                                logger.debug(f"音频元信息已回写到 Redis")
+                            except Exception as e:
+                                logger.warning(f"回写 Redis 失败: {e}")
+                        
                         return audio_result
                     else:
                         logger.warning(f"音频文件无效: {error_msg}，重新下载")
@@ -757,16 +824,34 @@ class NoteGenerator:
         
         # 下载音频
         try:
-            logger.info("开始下载音频")
+            logger.info("🎵 开始下载音频")
             audio = downloader.download(
                 video_url=video_url,
                 quality=quality,
                 output_dir=output_path,
                 need_video=need_video,
             )
-            # 缓存 audio 元信息到本地 JSON
-            audio_cache_file.write_text(json.dumps(asdict(audio), ensure_ascii=False, indent=2), encoding="utf-8")
-            logger.info(f"音频下载并缓存成功 ({audio_cache_file})")
+            audio_data = asdict(audio)
+            
+            # 写入文件缓存
+            audio_cache_file.write_text(
+                json.dumps(audio_data, ensure_ascii=False, indent=2),
+                encoding="utf-8"
+            )
+            logger.info(f"📁 音频元信息已缓存到文件: {audio_cache_file}")
+            
+            # 写入 Redis 缓存
+            if redis_manager.available:
+                try:
+                    redis_manager.set(
+                        cache_key,
+                        json.dumps(audio_data, ensure_ascii=False),
+                        ttl=604800  # 7天过期
+                    )
+                    logger.info(f"✅ 音频元信息已缓存到 Redis (TTL: 7天)")
+                except Exception as e:
+                    logger.warning(f"写入 Redis 缓存失败: {e}")
+            
             return audio
         except Exception as exc:
             logger.error(f"音频下载失败：{exc}")
@@ -781,33 +866,89 @@ class NoteGenerator:
         status_phase: TaskStatus,
     ) -> TranscriptResult | None:
         """
-        1. 检查转写缓存；若存在则尝试加载，否则调用转写器生成并缓存。
-        2. 返回 TranscriptResult 对象
+        转写音频，优先从 Redis 缓存读取，未命中时从文件读取或执行转写
 
         :param audio_file: 音频文件本地路径
         :param transcript_cache_file: 转写结果缓存路径
         :param status_phase: 对应的状态枚举，如 TaskStatus.TRANSCRIBING
         :return: TranscriptResult 对象
         """
+        from app.utils.redis_client import RedisManager
+        
         task_id = transcript_cache_file.stem.split("_")[0]
         self._update_status(task_id, status_phase)
-
-        # 已有缓存，尝试加载
+        
+        # 生成 Redis 缓存键（基于文件名，确保相同音频使用相同缓存）
+        cache_key = f"transcript:{transcript_cache_file.stem}"
+        
+        # 优先从 Redis 读取缓存
+        redis_manager = RedisManager(db=1)  # 使用 DB1 存储缓存
+        if redis_manager.available:
+            try:
+                cached_data = redis_manager.get(cache_key)
+                if cached_data:
+                    logger.info(f"✅ 从 Redis 读取转写缓存: {cache_key}")
+                    data = json.loads(cached_data)
+                    segments = [TranscriptSegment(**seg) for seg in data.get("segments", [])]
+                    return TranscriptResult(
+                        language=data["language"],
+                        full_text=data["full_text"],
+                        segments=segments,
+                        raw=data.get("raw", {})
+                    )
+            except Exception as e:
+                logger.warning(f"从 Redis 读取转写缓存失败: {e}")
+        
+        # Redis 未命中，尝试从文件读取
         if transcript_cache_file.exists():
-            logger.info(f"检测到转写缓存 ({transcript_cache_file})，尝试读取")
+            logger.info(f"📁 从文件读取转写缓存: {transcript_cache_file}")
             try:
                 data = json.loads(transcript_cache_file.read_text(encoding="utf-8"))
                 segments = [TranscriptSegment(**seg) for seg in data.get("segments", [])]
-                return TranscriptResult(language=data["language"], full_text=data["full_text"], segments=segments)
+                transcript = TranscriptResult(
+                    language=data["language"],
+                    full_text=data["full_text"],
+                    segments=segments,
+                    raw=data.get("raw", {})
+                )
+                
+                # 回写到 Redis
+                if redis_manager.available:
+                    try:
+                        redis_manager.set(cache_key, json.dumps(data, ensure_ascii=False), ttl=604800)  # 7天
+                        logger.debug(f"转写结果已回写到 Redis")
+                    except Exception as e:
+                        logger.warning(f"回写 Redis 失败: {e}")
+                
+                return transcript
             except Exception as e:
                 logger.warning(f"加载转写缓存失败，将重新转写：{e}")
 
-        # 调用转写器
+        # 执行转写
         try:
-            logger.info("开始转写音频")
+            logger.info("🎤 开始转写音频")
             transcript = self.transcriber.transcript(file_path=audio_file)
-            transcript_cache_file.write_text(json.dumps(asdict(transcript), ensure_ascii=False, indent=2), encoding="utf-8")
-            logger.info(f"转写并缓存成功 ({transcript_cache_file})")
+            transcript_data = asdict(transcript)
+            
+            # 写入文件缓存
+            transcript_cache_file.write_text(
+                json.dumps(transcript_data, ensure_ascii=False, indent=2),
+                encoding="utf-8"
+            )
+            logger.info(f"📁 转写结果已缓存到文件: {transcript_cache_file}")
+            
+            # 写入 Redis 缓存
+            if redis_manager.available:
+                try:
+                    redis_manager.set(
+                        cache_key,
+                        json.dumps(transcript_data, ensure_ascii=False),
+                        ttl=604800  # 7天过期
+                    )
+                    logger.info(f"✅ 转写结果已缓存到 Redis (TTL: 7天)")
+                except Exception as e:
+                    logger.warning(f"写入 Redis 缓存失败: {e}")
+            
             return transcript
         except Exception as exc:
             logger.error(f"音频转写失败：{exc}")
