@@ -37,7 +37,7 @@ class RealtimeAudioFasterWhisper:
     def __init__(
         self,
         sample_rate: int = 16000,
-        chunk_duration: float = 3,  # 建议 2-5 秒
+        chunk_duration: float = 2,  # 建议 2-5 秒
         device: str = "cuda"
     ):
         """
@@ -115,8 +115,9 @@ class RealtimeAudioFasterWhisper:
         logger.info("正在加载 Faster-Whisper large-v3 模型...")
         logger.info("=" * 80)
         
-        # 只使用 large-v3 模型
-        model_path = "./models/whisper/whisper-large-v3"
+        # 只使用 large-v3 模型（基于脚本所在目录）
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        model_path = os.path.join(script_dir, "models/whisper/whisper-large-v3")
         
         # 检查模型是否存在
         if not os.path.exists(model_path):
@@ -459,7 +460,7 @@ def main():
     
     streaming = RealtimeAudioFasterWhisper(
         sample_rate=16000,
-        chunk_duration=3.0,  # 3 秒一个块
+        chunk_duration=2,  # 3 秒一个块
         device="cuda"
     )
     

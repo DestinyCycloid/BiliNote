@@ -1,614 +1,324 @@
 # BiliNote Redis 集成方案
 
-## 一、项目现状分析
+## 一、项目现状与问题分析
 
-### 当前架构
-- **数据库**：SQLite（存储模型、提供商、视频任务记录）
-- **缓存**：文件系统（JSON 文件）
+### 1.1 核心业务流程
+```
+视频链接 → 下载音频 → 转写文字 → GPT总结 → 生成Markdown笔记
+```
+
+### 1.2 当前技术架构
+- **数据库**：SQLite（任务记录）
+- **缓存**：文件系统（JSON文件）
 - **任务状态**：文件系统（`{task_id}.status.json`）
-- **依赖**：`requirements.txt` 中已包含 `redis==5.2.1`，但未使用
+- **部署方式**：单机部署
+- **依赖**：已安装 `redis==5.2.1`
 
-### 存在的问题
-1. **文件 I/O 性能瓶颈**：任务状态频繁读写文件
-2. **缓存管理困难**：无法自动过期，需手动清理
-3. **并发问题**：多进程部署时文件竞争
-4. **实时性差**：轮询查询效率低，无法推送更新
-5. **分布式支持弱**：无法跨实例共享状态
+### 1.3 核心问题诊断
 
----
+#### 问题1：任务状态查询性能差 ⭐⭐⭐⭐⭐
+**现象**：
+- 前端每秒轮询读取 `{task_id}.status.json` 文件
+- 文件 I/O 平均耗时 5-10ms
+- 磁盘读写频繁
 
-## 二、Redis 应用场景
+**影响**：
+- 用户体验差，状态更新有延迟感
+- 服务器磁盘 I/O 负载高
 
-### 1. 任务状态管理 ⭐⭐⭐⭐⭐
+#### 问题2：缓存无过期机制 ⭐⭐⭐⭐⭐
+**现象**：
+- 音频文件、转写结果、Markdown 文件永久保存在 `note_results/` 目录
+- 目录持续膨胀，无自动清理机制
 
-**优先级：最高**
+**影响**：
+- 磁盘空间浪费
+- 需要手动清理，运维成本高
 
-#### 当前实现
-```python
-# backend/app/services/note.py
-def _update_status(self, task_id, status, message=None):
-    status_file = NOTE_OUTPUT_DIR / f"{task_id}.status.json"
-    data = {"status": status.value, "message": message}
-    with status_file.open('w') as f:
-        json.dump(data, f)
-```
+#### 问题3：缓存查询效率低 ⭐⭐⭐⭐
+**现象**：
+- 相同视频重复处理时，需要遍历文件系统查找缓存
+- 缓存键基于 `platform_videoid_quality`，但查询需要文件 I/O
 
-#### Redis 方案
-```python
-import redis
-from datetime import timedelta
-
-class RedisTaskManager:
-    def __init__(self):
-        self.redis = redis.Redis(
-            host=os.getenv("REDIS_HOST", "localhost"),
-            port=int(os.getenv("REDIS_PORT", 6379)),
-            db=0,
-            decode_responses=True
-        )
-    
-    def update_status(self, task_id: str, status: str, message: str = None, progress: int = None):
-        """更新任务状态"""
-        key = f"task:{task_id}"
-        data = {
-            "status": status,
-            "updated_at": time.time()
-        }
-        if message:
-            data["message"] = message
-        if progress is not None:
-            data["progress"] = progress
-        
-        # 使用 Hash 存储
-        self.redis.hset(key, mapping=data)
-        
-        # 设置过期时间（24小时）
-        self.redis.expire(key, 86400)
-    
-    def get_status(self, task_id: str) -> dict:
-        """获取任务状态"""
-        key = f"task:{task_id}"
-        data = self.redis.hgetall(key)
-        if not data:
-            return None
-        return data
-    
-    def publish_status(self, task_id: str, status: str):
-        """发布状态更新（用于实时推送）"""
-        channel = f"task_updates:{task_id}"
-        self.redis.publish(channel, json.dumps({
-            "task_id": task_id,
-            "status": status,
-            "timestamp": time.time()
-        }))
-```
-
-#### 优势
-- ✅ 毫秒级读写性能
-- ✅ 支持 Pub/Sub 实时推送
-- ✅ 自动过期清理
-- ✅ 多进程安全
+**影响**：
+- 缓存命中时仍需 10-50ms 查询时间
+- 响应速度慢
 
 ---
 
-### 2. 转写结果缓存 ⭐⭐⭐⭐⭐
+## 二、Redis 解决方案
 
-**优先级：最高**
+### 2.1 设计原则
+1. **最小改动**：不破坏现有代码结构
+2. **性能优先**：优先解决高频操作
+3. **渐进式**：保留文件系统作为降级方案
+4. **自动化**：利用 TTL 自动清理过期数据
 
-#### 当前实现
-```python
-# 文件缓存
-cache_key = f"{platform}_{video_id}_{quality}"
-transcript_cache_file = NOTE_OUTPUT_DIR / f"{cache_key}_transcript.json"
+### 2.2 核心应用场景
 
-if transcript_cache_file.exists():
-    data = json.loads(transcript_cache_file.read_text())
-    return TranscriptResult(**data)
+#### 场景1：任务状态管理 ⭐⭐⭐⭐⭐
+
+**数据结构**：Hash
+```
+Key: task:{task_id}
+Fields:
+  - status: "DOWNLOADING" | "TRANSCRIBING" | "SUCCESS" | "FAILED"
+  - message: 错误信息或进度描述
+  - updated_at: 更新时间戳
+TTL: 24小时
 ```
 
-#### Redis 方案
-```python
-class RedisCacheManager:
-    def __init__(self):
-        self.redis = redis.Redis(
-            host=os.getenv("REDIS_HOST", "localhost"),
-            port=int(os.getenv("REDIS_PORT", 6379)),
-            db=1,  # 使用独立的 DB
-            decode_responses=True
-        )
-    
-    def cache_transcript(self, platform: str, video_id: str, quality: str, transcript: TranscriptResult):
-        """缓存转写结果（7天过期）"""
-        key = f"transcript:{platform}:{video_id}:{quality}"
-        data = json.dumps(asdict(transcript), ensure_ascii=False)
-        self.redis.setex(key, 604800, data)  # 7天
-    
-    def get_transcript(self, platform: str, video_id: str, quality: str) -> TranscriptResult:
-        """获取缓存的转写结果"""
-        key = f"transcript:{platform}:{video_id}:{quality}"
-        data = self.redis.get(key)
-        if data:
-            return TranscriptResult(**json.loads(data))
-        return None
-    
-    def cache_audio_meta(self, platform: str, video_id: str, quality: str, audio_meta: AudioDownloadResult):
-        """缓存音频元信息（7天过期）"""
-        key = f"audio:{platform}:{video_id}:{quality}"
-        data = json.dumps(asdict(audio_meta), ensure_ascii=False)
-        self.redis.setex(key, 604800, data)
-    
-    def cache_markdown(self, task_id: str, markdown: str):
-        """缓存 Markdown 结果（30天过期）"""
-        key = f"markdown:{task_id}"
-        self.redis.setex(key, 2592000, markdown)
-```
+**性能提升**：
+- 查询时间：5-10ms → 0.5-1ms（提升 10 倍）
+- 自动过期清理，无需手动维护
 
-#### 优势
-- ✅ 查询速度提升 100+ 倍
-- ✅ 自动过期管理
-- ✅ 支持 LRU 淘汰策略
-- ✅ 内存占用可控
+**实现位置**：
+- 修改：`NoteGenerator._update_status()`
+- 修改：`GET /task_status/{task_id}` 接口
 
 ---
 
-### 3. 合集处理任务队列 ⭐⭐⭐⭐⭐
+#### 场景2：转写结果缓存 ⭐⭐⭐⭐⭐
 
-**优先级：高**
-
-#### 当前实现
-```python
-# 使用线程池并行处理
-processor = SimpleThreadPipeline(transcriber=self.transcriber, max_workers=None)
-markdowns = processor.process_playlist(audio_results, gpt, task_id)
+**数据结构**：String（JSON）
+```
+Key: transcript:{platform}:{video_id}:{quality}
+Value: TranscriptResult 的 JSON 序列化
+TTL: 7天
 ```
 
-#### Redis 方案（使用 Celery）
-```python
-# backend/app/tasks/celery_app.py
-from celery import Celery
+**性能提升**：
+- 缓存命中时，跳过转写步骤（节省 30-120 秒）
+- 查询时间：10-50ms → 1-2ms
 
-celery_app = Celery(
-    'bilinote',
-    broker=f'redis://{os.getenv("REDIS_HOST", "localhost")}:6379/2',
-    backend=f'redis://{os.getenv("REDIS_HOST", "localhost")}:6379/3'
-)
-
-@celery_app.task(bind=True, max_retries=3)
-def transcribe_video_task(self, video_url: str, quality: str, task_id: str):
-    """异步转写任务"""
-    try:
-        # 更新进度
-        self.update_state(state='PROGRESS', meta={'progress': 0})
-        
-        # 下载音频
-        audio = download_audio(video_url, quality)
-        self.update_state(state='PROGRESS', meta={'progress': 30})
-        
-        # 转写
-        transcript = transcribe_audio(audio.file_path)
-        self.update_state(state='PROGRESS', meta={'progress': 70})
-        
-        # GPT 总结
-        markdown = summarize_text(transcript)
-        self.update_state(state='PROGRESS', meta={'progress': 100})
-        
-        return {"markdown": markdown, "status": "success"}
-    except Exception as exc:
-        self.retry(exc=exc, countdown=60)
-
-@celery_app.task
-def process_playlist_task(video_urls: list, task_id: str):
-    """合集处理任务"""
-    # 创建子任务组
-    job = group(
-        transcribe_video_task.s(url, "medium", f"{task_id}_{i}")
-        for i, url in enumerate(video_urls)
-    )
-    result = job.apply_async()
-    return result.get()
-```
-
-#### 使用方式
-```python
-# 提交任务
-task = transcribe_video_task.delay(video_url, quality, task_id)
-
-# 查询进度
-result = celery_app.AsyncResult(task.id)
-print(result.state, result.info)
-```
-
-#### 优势
-- ✅ 分布式处理（多机器）
-- ✅ 自动重试机制
-- ✅ 任务优先级控制
-- ✅ 实时进度跟踪
-- ✅ 失败任务可恢复
+**实现位置**：
+- 修改：`NoteGenerator._transcribe_audio()`
 
 ---
 
-### 4. API 限流 ⭐⭐⭐⭐
+#### 场景3：音频元信息缓存 ⭐⭐⭐⭐
 
-**优先级：中**
-
-#### 场景
-防止 Deepgram、Groq 等云端 API 超出配额
-
-#### Redis 方案
-```python
-class RateLimiter:
-    def __init__(self):
-        self.redis = redis.Redis(
-            host=os.getenv("REDIS_HOST", "localhost"),
-            port=int(os.getenv("REDIS_PORT", 6379)),
-            db=4,
-            decode_responses=True
-        )
-    
-    def check_rate_limit(self, api_name: str, user_id: str, max_requests: int, window: int) -> bool:
-        """
-        滑动窗口限流
-        
-        :param api_name: API 名称（如 "deepgram", "groq"）
-        :param user_id: 用户 ID
-        :param max_requests: 窗口内最大请求数
-        :param window: 时间窗口（秒）
-        :return: True 表示允许请求，False 表示超限
-        """
-        key = f"ratelimit:{api_name}:{user_id}"
-        current = self.redis.incr(key)
-        
-        if current == 1:
-            self.redis.expire(key, window)
-        
-        return current <= max_requests
-    
-    def get_remaining(self, api_name: str, user_id: str, max_requests: int) -> int:
-        """获取剩余配额"""
-        key = f"ratelimit:{api_name}:{user_id}"
-        current = int(self.redis.get(key) or 0)
-        return max(0, max_requests - current)
-
-# 使用示例
-limiter = RateLimiter()
-
-def call_deepgram_api(user_id: str):
-    # Deepgram 限制：每分钟 20 次
-    if not limiter.check_rate_limit("deepgram", user_id, 20, 60):
-        raise HTTPException(429, "API 调用超限，请稍后重试")
-    
-    # 调用 API
-    result = deepgram.transcribe(...)
-    return result
+**数据结构**：String（JSON）
 ```
+Key: audio:{platform}:{video_id}:{quality}
+Value: AudioDownloadResult 的 JSON 序列化
+TTL: 7天
+```
+
+**性能提升**：
+- 缓存命中时，跳过视频解析和下载（节省 5-30 秒）
+- 查询时间：10-50ms → 1-2ms
+
+**实现位置**：
+- 修改：`NoteGenerator._download_media()`
 
 ---
 
-### 5. 实时转写会话管理 ⭐⭐⭐⭐
+#### 场景4：Markdown 结果缓存 ⭐⭐⭐
 
-**优先级：中**
-
-#### 场景
-Deepgram、Paraformer 实时转写的 WebSocket 会话管理
-
-#### Redis 方案
-```python
-class RealtimeSessionManager:
-    def __init__(self):
-        self.redis = redis.Redis(
-            host=os.getenv("REDIS_HOST", "localhost"),
-            port=int(os.getenv("REDIS_PORT", 6379)),
-            db=5,
-            decode_responses=True
-        )
-    
-    def create_session(self, session_id: str, user_id: str, model: str):
-        """创建实时转写会话"""
-        key = f"session:{session_id}"
-        self.redis.hset(key, mapping={
-            "user_id": user_id,
-            "model": model,
-            "start_time": time.time(),
-            "status": "active"
-        })
-        self.redis.expire(key, 3600)  # 1小时过期
-    
-    def append_text(self, session_id: str, text: str):
-        """追加转写文本"""
-        key = f"session:{session_id}:text"
-        self.redis.append(key, text + "\n")
-        self.redis.expire(key, 3600)
-    
-    def get_session_text(self, session_id: str) -> str:
-        """获取会话的完整转写文本"""
-        key = f"session:{session_id}:text"
-        return self.redis.get(key) or ""
-    
-    def close_session(self, session_id: str):
-        """关闭会话"""
-        key = f"session:{session_id}"
-        self.redis.hset(key, "status", "closed")
-        self.redis.hset(key, "end_time", time.time())
+**数据结构**：String
 ```
+Key: markdown:{task_id}
+Value: Markdown 文本
+TTL: 30天
+```
+
+**性能提升**：
+- 用户重新查看历史笔记时，无需读取文件
+
+**实现位置**：
+- 修改：`NoteGenerator.generate()` 完成后写入
+- 修改：`GET /task_status/{task_id}` 接口优先读取
 
 ---
 
-### 6. 视频下载去重 ⭐⭐⭐
+### 2.3 不推荐的场景
 
-**优先级：低**
-
-#### 场景
-多用户同时下载同一视频时，避免重复下载
-
-#### Redis 方案
-```python
-class DownloadLockManager:
-    def __init__(self):
-        self.redis = redis.Redis(
-            host=os.getenv("REDIS_HOST", "localhost"),
-            port=int(os.getenv("REDIS_PORT", 6379)),
-            db=6,
-            decode_responses=True
-        )
-    
-    def acquire_lock(self, video_id: str, timeout: int = 300) -> bool:
-        """获取下载锁"""
-        key = f"lock:download:{video_id}"
-        return self.redis.set(key, 1, nx=True, ex=timeout)
-    
-    def release_lock(self, video_id: str):
-        """释放下载锁"""
-        key = f"lock:download:{video_id}"
-        self.redis.delete(key)
-    
-    def wait_for_download(self, video_id: str, max_wait: int = 300):
-        """等待其他进程完成下载"""
-        key = f"lock:download:{video_id}"
-        start = time.time()
-        while time.time() - start < max_wait:
-            if not self.redis.exists(key):
-                return True
-            time.sleep(1)
-        return False
-
-# 使用示例
-lock_manager = DownloadLockManager()
-
-def download_video(video_id: str):
-    if lock_manager.acquire_lock(video_id):
-        try:
-            # 执行下载
-            result = downloader.download(video_url)
-            return result
-        finally:
-            lock_manager.release_lock(video_id)
-    else:
-        # 等待其他进程完成
-        if lock_manager.wait_for_download(video_id):
-            # 从缓存读取
-            return get_cached_video(video_id)
-        else:
-            raise TimeoutError("下载超时")
-```
+| 场景 | 原因 |
+|------|------|
+| Celery 任务队列 | FastAPI BackgroundTasks 已满足需求，无需引入额外复杂度 |
+| API 限流 | 单用户场景，API 自带限流已足够 |
+| 实时转写会话 | 使用频率低，内存管理即可 |
+| 分布式锁 | 单机部署，无并发竞争问题 |
 
 ---
 
 ## 三、实施方案
 
-### 阶段一：基础集成（1-2天）
+### 3.1 环境配置（已完成 ✅）
 
-#### 1. 安装和配置
-```bash
-# 安装 Redis（已在 requirements.txt 中）
-pip install redis==5.2.1
+**Redis 服务器**：
+- 地址：192.168.127.128:6379
+- 版本：8.0.2
+- 状态：运行正常
 
-# 启动 Redis 服务
-# Windows: 下载 Redis for Windows
-# Linux/Mac: sudo systemctl start redis
-```
-
-#### 2. 配置文件
-```python
+**项目配置**：
+```env
 # backend/.env
-REDIS_HOST=localhost
+REDIS_HOST=192.168.127.128
 REDIS_PORT=6379
 REDIS_PASSWORD=
 REDIS_DB_TASK=0        # 任务状态
 REDIS_DB_CACHE=1       # 缓存
-REDIS_DB_QUEUE=2       # 任务队列
-```
-
-#### 3. 创建 Redis 客户端
-```python
-# backend/app/utils/redis_client.py
-import redis
-import os
-from typing import Optional
-
-class RedisClient:
-    _instance: Optional[redis.Redis] = None
-    
-    @classmethod
-    def get_instance(cls, db: int = 0) -> redis.Redis:
-        """获取 Redis 单例"""
-        if cls._instance is None:
-            cls._instance = redis.Redis(
-                host=os.getenv("REDIS_HOST", "localhost"),
-                port=int(os.getenv("REDIS_PORT", 6379)),
-                password=os.getenv("REDIS_PASSWORD", None),
-                db=db,
-                decode_responses=True,
-                socket_connect_timeout=5,
-                socket_timeout=5
-            )
-        return cls._instance
-    
-    @classmethod
-    def ping(cls) -> bool:
-        """检查 Redis 连接"""
-        try:
-            return cls.get_instance().ping()
-        except:
-            return False
-```
-
-#### 4. 修改任务状态管理
-```python
-# backend/app/services/note.py
-from app.utils.redis_client import RedisClient
-
-class NoteGenerator:
-    def __init__(self):
-        # ... 原有代码
-        self.redis = RedisClient.get_instance(db=0)
-        self.use_redis = RedisClient.ping()
-    
-    def _update_status(self, task_id: str, status: TaskStatus, message: str = None):
-        """更新任务状态（优先使用 Redis）"""
-        if not task_id:
-            return
-        
-        if self.use_redis:
-            # 使用 Redis
-            key = f"task:{task_id}"
-            data = {
-                "status": status.value,
-                "updated_at": str(time.time())
-            }
-            if message:
-                data["message"] = message
-            
-            self.redis.hset(key, mapping=data)
-            self.redis.expire(key, 86400)
-        else:
-            # 降级到文件系统
-            status_file = NOTE_OUTPUT_DIR / f"{task_id}.status.json"
-            # ... 原有文件写入逻辑
 ```
 
 ---
 
-### 阶段二：缓存优化（2-3天）
+### 3.2 代码实现（分阶段）
 
-#### 1. 实现缓存管理器
-```python
-# backend/app/utils/cache_manager.py
-from app.utils.redis_client import RedisClient
-import json
-from typing import Optional, Any
+#### 阶段一：Redis 客户端封装（30分钟）
 
-class CacheManager:
-    def __init__(self):
-        self.redis = RedisClient.get_instance(db=1)
-        self.use_redis = RedisClient.ping()
-    
-    def get(self, key: str) -> Optional[Any]:
-        """获取缓存"""
-        if self.use_redis:
-            data = self.redis.get(key)
-            return json.loads(data) if data else None
-        return None
-    
-    def set(self, key: str, value: Any, ttl: int = 604800):
-        """设置缓存（默认7天）"""
-        if self.use_redis:
-            self.redis.setex(key, ttl, json.dumps(value, ensure_ascii=False))
-    
-    def delete(self, key: str):
-        """删除缓存"""
-        if self.use_redis:
-            self.redis.delete(key)
+**文件**：`backend/app/utils/redis_client.py`
+
+**核心功能**：
+- 单例模式管理连接
+- 支持多 DB 切换
+- 提供 `ping()` 检测可用性
+- 连接失败时返回 None，自动降级
+
+---
+
+#### 阶段二：任务状态管理（1小时）
+
+**修改文件**：
+- `backend/app/services/note.py` → `_update_status()` 方法
+- `backend/app/routers/note.py` → `GET /task_status/{task_id}` 接口
+
+**实现逻辑**：
+1. 写入状态时：优先写 Redis，失败时降级到文件
+2. 读取状态时：优先读 Redis，未命中时读文件
+3. 设置 24 小时 TTL
+
+---
+
+#### 阶段三：缓存优化（2小时）
+
+**修改方法**：
+- `_transcribe_audio()`：转写结果缓存
+- `_download_media()`：音频元信息缓存
+- `generate()`：Markdown 结果缓存
+
+**查询顺序**：
+```
+Redis → 文件 → 执行操作
 ```
 
-#### 2. 修改转写缓存逻辑
-```python
-# backend/app/services/note.py
-from app.utils.cache_manager import CacheManager
+**写入策略**：
+```
+Redis + 文件（双写保证数据安全）
+```
 
-class NoteGenerator:
-    def __init__(self):
-        # ... 原有代码
-        self.cache = CacheManager()
-    
-    def _transcribe_audio(self, audio_file: str, transcript_cache_file: Path, status_phase: TaskStatus):
-        """转写音频（优先使用 Redis 缓存）"""
-        task_id = transcript_cache_file.stem.split("_")[0]
-        self._update_status(task_id, status_phase)
-        
-        # 尝试从 Redis 缓存读取
-        cache_key = f"transcript:{audio_file}"
-        cached = self.cache.get(cache_key)
-        if cached:
-            logger.info(f"从 Redis 缓存读取转写结果")
-            return TranscriptResult(**cached)
-        
-        # 尝试从文件缓存读取
-        if transcript_cache_file.exists():
-            # ... 原有文件读取逻辑
-        
-        # 执行转写
-        transcript = self.transcriber.transcript(file_path=audio_file)
-        
-        # 写入 Redis 缓存
-        self.cache.set(cache_key, asdict(transcript), ttl=604800)
-        
-        # 写入文件缓存（降级方案）
-        transcript_cache_file.write_text(...)
-        
-        return transcript
+**TTL 设置**：
+- 转写结果：7天
+- 音频元信息：7天
+- Markdown：30天
+
+---
+
+### 3.3 降级策略
+
+**设计原则**：Redis 不可用时，系统仍能正常运行
+
+**实现方式**：
+```python
+# 初始化时检测
+redis_available = RedisClient.ping()
+
+# 使用时判断
+if redis_available:
+    try:
+        # 尝试 Redis 操作
+        result = redis.get(key)
+    except:
+        # 失败时降级到文件
+        result = read_from_file()
+else:
+    # 直接使用文件系统
+    result = read_from_file()
 ```
 
 ---
 
-### 阶段三：任务队列（3-5天，可选）
+## 四、性能对比
 
-#### 1. 安装 Celery
+### 4.1 任务状态查询
+
+| 指标 | 文件系统 | Redis | 提升 |
+|------|---------|-------|------|
+| 平均响应时间 | 5-10ms | 0.5-1ms | 10倍 |
+| 自动清理 | ❌ | ✅ 24小时 | - |
+
+### 4.2 缓存查询
+
+| 指标 | 文件系统 | Redis | 提升 |
+|------|---------|-------|------|
+| 查询时间 | 10-50ms | 1-2ms | 10-20倍 |
+| 过期管理 | 手动 | 自动 | - |
+
+### 4.3 整体流程
+
+| 场景 | 优化前 | 优化后 | 节省时间 |
+|------|--------|--------|----------|
+| 首次处理 | 60-180秒 | 60-180秒 | 0秒 |
+| 缓存命中（转写） | 60-180秒 | 30-60秒 | 30-120秒 |
+| 缓存命中（全部） | 60-180秒 | 1-2秒 | 58-178秒 |
+
+---
+
+## 五、监控与维护
+
+### 5.1 监控接口
+
+**接口**：`GET /api/redis/info`
+
+**返回信息**：
+- Redis 连接状态
+- 已用内存
+- 连接客户端数
+- 总命令数
+
+### 5.2 缓存清理
+
+**自动清理**（TTL）：
+- 任务状态：24小时
+- 转写结果：7天
+- 音频元信息：7天
+- Markdown：30天
+
+**手动清理**：
 ```bash
-pip install celery==5.3.4
+# 清理所有任务状态
+redis-cli -h 192.168.127.128 --scan --pattern "task:*" | xargs redis-cli -h 192.168.127.128 del
+
+# 清理所有缓存
+redis-cli -h 192.168.127.128 FLUSHDB
+
+# 查看内存使用
+redis-cli -h 192.168.127.128 INFO memory
 ```
 
-#### 2. 创建 Celery 应用
-```python
-# backend/app/tasks/celery_app.py
-from celery import Celery
-import os
+### 5.3 故障处理
 
-celery_app = Celery(
-    'bilinote',
-    broker=f'redis://{os.getenv("REDIS_HOST", "localhost")}:6379/2',
-    backend=f'redis://{os.getenv("REDIS_HOST", "localhost")}:6379/3'
-)
+**Redis 连接失败**：
+- 自动降级到文件系统
+- 记录警告日志
+- 不影响核心功能
 
-celery_app.conf.update(
-    task_serializer='json',
-    accept_content=['json'],
-    result_serializer='json',
-    timezone='Asia/Shanghai',
-    enable_utc=True,
-    task_track_started=True,
-    task_time_limit=3600,  # 1小时超时
-    worker_prefetch_multiplier=1,
-)
-```
-
-#### 3. 启动 Celery Worker
-```bash
-# 开发环境
-celery -A app.tasks.celery_app worker --loglevel=info
-
-# 生产环境
-celery -A app.tasks.celery_app worker --loglevel=info --concurrency=4
-```
+**Redis 内存不足**：
+- 配置 `maxmemory-policy allkeys-lru`
+- 自动淘汰最少使用的键
 
 ---
 
-## 四、部署配置
+## 六、部署配置
 
-### Docker Compose 配置
+### 6.1 开发环境
+- 使用远程 Redis（192.168.127.128:6379）
+- 开启降级策略
+
+### 6.2 生产环境（Docker Compose）
+
 ```yaml
-# docker-compose.yml
-version: '3.8'
-
 services:
   redis:
     image: redis:7-alpine
@@ -617,98 +327,76 @@ services:
       - "6379:6379"
     volumes:
       - redis-data:/data
-    command: redis-server --appendonly yes
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
     restart: unless-stopped
   
   backend:
     build: ./backend
-    container_name: bilinote-backend
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
     depends_on:
       - redis
-    ports:
-      - "8483:8483"
-  
-  celery-worker:
-    build: ./backend
-    container_name: bilinote-celery
-    command: celery -A app.tasks.celery_app worker --loglevel=info
-    environment:
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-    depends_on:
-      - redis
-      - backend
 
 volumes:
   redis-data:
 ```
 
----
-
-## 五、性能对比
-
-### 任务状态查询
-| 方案 | 平均响应时间 | QPS |
-|------|------------|-----|
-| 文件系统 | 5-10ms | ~200 |
-| Redis | 0.5-1ms | ~10000 |
-
-### 缓存命中
-| 方案 | 查询时间 | 内存占用 |
-|------|---------|---------|
-| 文件系统 | 10-50ms | 磁盘 |
-| Redis | 1-2ms | 内存 |
+**配置说明**：
+- `appendonly yes`：开启 AOF 持久化
+- `maxmemory 512mb`：限制最大内存
+- `maxmemory-policy allkeys-lru`：内存不足时 LRU 淘汰
 
 ---
 
-## 六、监控和维护
+## 七、实施时间表
 
-### Redis 监控
-```python
-# backend/app/routers/system.py
-@router.get("/redis/info")
-def get_redis_info():
-    """获取 Redis 状态"""
-    redis_client = RedisClient.get_instance()
-    info = redis_client.info()
-    return {
-        "connected": True,
-        "used_memory": info.get("used_memory_human"),
-        "connected_clients": info.get("connected_clients"),
-        "total_commands": info.get("total_commands_processed"),
-        "uptime_days": info.get("uptime_in_days")
-    }
-```
-
-### 缓存清理
-```python
-# 清理过期任务状态
-redis-cli --scan --pattern "task:*" | xargs redis-cli del
-
-# 清理所有缓存
-redis-cli FLUSHDB
-```
+| 阶段 | 任务 | 预计时间 |
+|------|------|----------|
+| 第1天 | Redis 客户端封装 + 任务状态管理 | 1.5小时 |
+| 第2天 | 缓存优化（转写、音频、Markdown） | 2小时 |
+| 第3天 | 测试 + 监控接口 + 文档 | 1小时 |
+| **总计** | | **4.5小时** |
 
 ---
 
-## 七、总结
+## 八、预期收益
 
-### 推荐实施顺序
-1. **阶段一**：任务状态管理 + 基础缓存（必须）
-2. **阶段二**：完整缓存系统（推荐）
-3. **阶段三**：Celery 任务队列（可选，适合高并发场景）
+### 8.1 性能提升
+- ✅ 任务状态查询速度提升 **10倍**（5-10ms → 0.5-1ms）
+- ✅ 缓存命中时节省 **30-120秒**
+- ✅ 缓存查询速度提升 **10-20倍**
 
-### 预期收益
-- ✅ 任务状态查询性能提升 **10倍**
-- ✅ 缓存命中率提升至 **80%+**
-- ✅ 支持分布式部署
-- ✅ 自动过期管理，减少磁盘占用
-- ✅ 实时状态推送，提升用户体验
+### 8.2 运维优化
+- ✅ 自动过期清理，减少 **磁盘占用**
+- ✅ 无需手动清理缓存文件
+- ✅ 降级策略保证 **系统稳定性**
 
-### 风险控制
-- 保留文件系统作为降级方案
-- Redis 不可用时自动切换到文件缓存
-- 定期备份 Redis 数据（RDB + AOF）
+### 8.3 用户体验
+- ✅ 状态更新更及时
+- ✅ 重复视频处理更快
+- ✅ 系统响应更流畅
+
+---
+
+## 九、总结
+
+### 9.1 核心价值
+通过引入 Redis，解决 BiliNote 的三大痛点：
+1. **任务状态查询慢** → 查询速度提升 10 倍
+2. **缓存无过期机制** → TTL 自动清理，减少磁盘占用
+3. **缓存查询效率低** → 内存查询，速度提升 10-20 倍
+
+### 9.2 实施建议
+- **优先级**：任务状态管理 > 转写缓存 > 音频缓存 > Markdown 缓存
+- **策略**：渐进式集成，保留降级方案
+- **时间**：预计 **4.5 小时**完成
+
+### 9.3 风险控制
+- Redis 不可用时自动降级到文件系统
+- 双写策略保证数据安全
+- 配置 LRU 淘汰策略防止内存溢出

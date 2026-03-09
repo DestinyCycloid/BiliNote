@@ -51,7 +51,7 @@ class RealtimeAudioStreaming:
     def __init__(
         self,
         sample_rate: int = 16000,
-        chunk_duration: float = 2,  # 每个块的时长（秒）
+        chunk_duration: float = 0.6,  # 每个块的时长（秒）
         device: str = "cuda"
     ):
         """
@@ -134,8 +134,9 @@ class RealtimeAudioStreaming:
         logger.info("正在加载 Paraformer-streaming 模型...")
         logger.info("=" * 80)
         
-        # 优先使用本地模型（与项目保持一致）
-        local_model_dir = "./models/iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online"
+        # 优先使用本地模型（基于脚本所在目录）
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        local_model_dir = os.path.join(script_dir, "models/iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online")
         
         if os.path.exists(local_model_dir):
             model_path = local_model_dir
