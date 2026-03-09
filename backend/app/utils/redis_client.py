@@ -24,6 +24,21 @@ class RedisClient:
         """不应直接实例化，请使用 get_instance() 方法"""
         raise RuntimeError("请使用 RedisClient.get_instance() 获取实例")
     
+    @staticmethod
+    def get_db_from_env(db_type: str) -> int:
+        """
+        从环境变量获取 Redis DB 编号
+        
+        :param db_type: DB 类型，可选值: 'task', 'cache', 'queue'
+        :return: DB 编号
+        """
+        db_map = {
+            'task': int(os.getenv('REDIS_DB_TASK', 0)),
+            'cache': int(os.getenv('REDIS_DB_CACHE', 1)),
+            'queue': int(os.getenv('REDIS_DB_QUEUE', 2)),
+        }
+        return db_map.get(db_type, 0)
+    
     @classmethod
     def get_instance(cls, db: int = 0) -> Optional[redis.Redis]:
         """
@@ -45,6 +60,10 @@ class RedisClient:
             host = os.getenv("REDIS_HOST", "localhost")
             port = int(os.getenv("REDIS_PORT", 6379))
             password = os.getenv("REDIS_PASSWORD", None) or None
+            
+            # 如果没有指定 db，使用默认值
+            if db is None:
+                db = 0
             
             logger.info(f"正在连接 Redis: {host}:{port} DB={db}")
             
@@ -138,6 +157,24 @@ class RedisManager:
         self.db = db
         self.client = RedisClient.get_instance(db=db)
         self.available = self.client is not None
+    
+    @classmethod
+    def for_task(cls):
+        """创建用于任务状态管理的 Redis 管理器"""
+        db = RedisClient.get_db_from_env('task')
+        return cls(db=db)
+    
+    @classmethod
+    def for_cache(cls):
+        """创建用于缓存的 Redis 管理器"""
+        db = RedisClient.get_db_from_env('cache')
+        return cls(db=db)
+    
+    @classmethod
+    def for_queue(cls):
+        """创建用于任务队列的 Redis 管理器"""
+        db = RedisClient.get_db_from_env('queue')
+        return cls(db=db)
     
     def set(self, key: str, value: str, ttl: Optional[int] = None) -> bool:
         """

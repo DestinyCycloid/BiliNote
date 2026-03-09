@@ -282,7 +282,7 @@ def get_task_status(task_id: str):
     
     # 优先从 Redis 读取状态
     try:
-        redis_manager = RedisManager(db=0)
+        redis_manager = RedisManager.for_task()
         if redis_manager.available:
             redis_key = f"task:{task_id}"
             status_data = redis_manager.hgetall(redis_key)

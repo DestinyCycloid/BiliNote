@@ -215,7 +215,7 @@ class NoteGenerator:
 
             # 6. 缓存 Markdown 到 Redis
             from app.utils.redis_client import RedisManager
-            redis_manager = RedisManager(db=1)
+            redis_manager = RedisManager.for_cache()
             if redis_manager.available:
                 try:
                     markdown_key = f"markdown:{task_id}"
@@ -659,7 +659,7 @@ class NoteGenerator:
         # 优先尝试写入 Redis
         redis_success = False
         try:
-            redis_manager = RedisManager(db=0)  # 使用 DB0 存储任务状态
+            redis_manager = RedisManager.for_task()
             if redis_manager.available:
                 redis_key = f"task:{task_id}"
                 redis_success = redis_manager.hset(redis_key, data, ttl=86400)  # 24小时过期
@@ -767,7 +767,7 @@ class NoteGenerator:
         
         # 生成 Redis 缓存键
         cache_key = f"audio:{audio_cache_file.stem}"
-        redis_manager = RedisManager(db=1)  # 使用 DB1 存储缓存
+        redis_manager = RedisManager.for_cache()
         
         # 优先从 Redis 读取缓存
         if redis_manager.available:
@@ -882,7 +882,7 @@ class NoteGenerator:
         cache_key = f"transcript:{transcript_cache_file.stem}"
         
         # 优先从 Redis 读取缓存
-        redis_manager = RedisManager(db=1)  # 使用 DB1 存储缓存
+        redis_manager = RedisManager.for_cache()
         if redis_manager.available:
             try:
                 cached_data = redis_manager.get(cache_key)

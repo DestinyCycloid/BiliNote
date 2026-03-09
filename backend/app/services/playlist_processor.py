@@ -213,9 +213,9 @@ class SimpleThreadPipeline:
                     download_time = time.time() - download_start
                     logger.info(f"[{idx+1}/{total}] 下载完成，耗时 {download_time:.1f}秒")
             
-            # 1. 转写（带重试机制）
+            # 1. 转写（带 Redis 缓存和重试机制）
             logger.info(f"[{idx+1}/{total}] 开始转写")
-            transcript = self._transcribe_with_retry(audio.file_path, idx, total)
+            transcript = self._transcribe_with_cache_and_retry(audio, idx, total)
             
             self.stats.transcribed += 1
             
@@ -253,6 +253,67 @@ class SimpleThreadPipeline:
         except Exception as e:
             logger.error(f"[{idx+1}/{total}] 处理失败: {e}", exc_info=True)
             raise
+    
+    def _transcribe_with_cache_and_retry(
+        self,
+        audio: AudioDownloadResult,
+        idx: int,
+        total: int,
+        max_retries: int = 3
+    ) -> TranscriptResult:
+        """
+        带 Redis 缓存和重试机制的转写方法
+        
+        :param audio: 音频元信息
+        :param idx: 视频索引
+        :param total: 总视频数
+        :param max_retries: 最大重试次数
+        :return: 转写结果
+        """
+        import json
+        from dataclasses import asdict
+        from app.models.transcriber_model import TranscriptSegment
+        from app.utils.redis_client import RedisManager
+        
+        # 生成缓存键（基于 video_id 和 quality）
+        video_id = audio.video_id or audio.title
+        cache_key = f"transcript:playlist_{video_id}"
+        
+        # 优先从 Redis 读取缓存
+        redis_manager = RedisManager.for_cache()
+        if redis_manager.available:
+            try:
+                cached_data = redis_manager.get(cache_key)
+                if cached_data:
+                    logger.info(f"[{idx+1}/{total}] ✅ 从 Redis 读取转写缓存")
+                    data = json.loads(cached_data)
+                    segments = [TranscriptSegment(**seg) for seg in data.get("segments", [])]
+                    return TranscriptResult(
+                        language=data["language"],
+                        full_text=data["full_text"],
+                        segments=segments,
+                        raw=data.get("raw", {})
+                    )
+            except Exception as e:
+                logger.warning(f"[{idx+1}/{total}] 从 Redis 读取缓存失败: {e}")
+        
+        # Redis 未命中，执行转写（带重试）
+        transcript = self._transcribe_with_retry(audio.file_path, idx, total, max_retries)
+        
+        # 写入 Redis 缓存
+        if redis_manager.available:
+            try:
+                transcript_data = asdict(transcript)
+                redis_manager.set(
+                    cache_key,
+                    json.dumps(transcript_data, ensure_ascii=False),
+                    ttl=604800  # 7天过期
+                )
+                logger.info(f"[{idx+1}/{total}] ✅ 转写结果已缓存到 Redis (TTL: 7天)")
+            except Exception as e:
+                logger.warning(f"[{idx+1}/{total}] 写入 Redis 缓存失败: {e}")
+        
+        return transcript
     
     def _transcribe_with_retry(self, file_path: str, idx: int, total: int, max_retries: int = 3) -> any:
         """
