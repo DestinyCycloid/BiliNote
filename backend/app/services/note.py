@@ -748,6 +748,10 @@ class NoteGenerator:
 
                 # 若指定了 grid_size，则生成缩略图
                 if grid_size:
+                    # 限制最大网格图数量，配合分批处理机制可以处理长视频
+                    # 默认 30 张，每批 8 张，大约需要 4 次 API 调用
+                    max_grids = int(os.getenv("MAX_VIDEO_GRIDS", "30"))
+                    logger.info(f"开始生成视频缩略图（最多 {max_grids} 个网格图）")
                     self.video_img_urls=VideoReader(
                         video_path=str(self.video_path),
                         grid_size=tuple(grid_size),
@@ -755,7 +759,8 @@ class NoteGenerator:
                         unit_width=1280,
                         unit_height=720,
                         save_quality=90,
-                    ).run()
+                    ).run(max_grids=max_grids)
+                    logger.info(f"✅ 生成了 {len(self.video_img_urls)} 张网格图")
                 else:
                     logger.info("未指定 grid_size，跳过缩略图生成")
             except Exception as exc:

@@ -103,7 +103,13 @@ class VideoReader:
                 base64_images.append(f"data:image/jpeg;base64,{encoded_string}")
         return base64_images
 
-    def run(self)->list[str]:
+    def run(self, max_grids=30)->list[str]:
+        """
+        执行视频帧提取和网格图生成
+        
+        :param max_grids: 最大网格图数量，默认 30 张（配合分批处理机制）
+        :return: base64 编码的图片 URL 列表
+        """
         logger.info("开始提取视频帧...")
         try:
             # 确保目录存在
@@ -120,11 +126,28 @@ class VideoReader:
                 if file.startswith("grid_"):
                     os.remove(os.path.join(self.grid_dir, file))
             print(self.frame_dir,self.grid_dir)
-            self.extract_frames()
+            
+            # 先提取所有需要的帧（根据视频长度和间隔，最多 1000 帧）
+            logger.info(f"根据视频长度和间隔提取帧（最多 1000 帧）")
+            self.extract_frames(max_frames=1000)
+            
             print("2#3",self.frame_dir,self.grid_dir)
             logger.info("开始拼接网格图...")
             image_paths = []
             groups = self.group_images()
+            
+            total_groups = len(groups)
+            logger.info(f"共提取 {total_groups * self.grid_size[0] * self.grid_size[1]} 帧，可生成 {total_groups} 个网格图")
+            
+            # 如果网格图数量超过限制，智能采样
+            if total_groups > max_grids:
+                logger.info(f"⚠️ 网格图数量 ({total_groups}) 超过限制 ({max_grids})，进行智能采样")
+                # 均匀采样：从所有组中选择 max_grids 个
+                step = total_groups / max_grids
+                sampled_indices = [int(i * step) for i in range(max_grids)]
+                groups = [groups[i] for i in sampled_indices if i < len(groups)]
+                logger.info(f"✅ 采样后保留 {len(groups)} 个网格图，覆盖整个视频时长")
+            
             for idx, group in enumerate(groups, start=1):
                 if len(group) < self.grid_size[0] * self.grid_size[1]:
                     logger.warning(f"⚠️ 跳过第 {idx} 组，图片不足 {self.grid_size[0] * self.grid_size[1]} 张")
@@ -132,8 +155,9 @@ class VideoReader:
                 out_path = self.concat_images(group, f"grid_{idx}")
                 image_paths.append(out_path)
 
-            logger.info("📤 开始编码图像...")
+            logger.info(f"📤 开始编码 {len(image_paths)} 张网格图...")
             urls = self.encode_images_to_base64(image_paths)
+            logger.info(f"✅ 成功生成 {len(urls)} 张网格图")
             return urls
         except Exception as e:
             logger.error(f"发生错误：{str(e)}")
