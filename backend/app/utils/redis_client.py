@@ -47,6 +47,14 @@ class RedisClient:
         :param db: Redis 数据库编号（0-15）
         :return: Redis 客户端实例，连接失败时返回 None
         """
+        # 检查 Redis 是否被禁用
+        redis_enabled = os.getenv("REDIS_ENABLED", "true").lower() in ("true", "1", "yes")
+        if not redis_enabled:
+            if cls._available is None:
+                logger.info("⚠️ Redis 已被禁用（REDIS_ENABLED=false），系统将使用文件系统模式")
+            cls._available = False
+            return None
+        
         # 如果已经检测到 Redis 不可用，直接返回 None
         if cls._available is False:
             return None
