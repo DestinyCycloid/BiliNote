@@ -1,3 +1,3 @@
 DevHarness GitHub webhook E2E marker
 run_id=20260715072945-b60cfda7
-revision=2
+revision=3
